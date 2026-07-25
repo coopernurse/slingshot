@@ -72,5 +72,10 @@ def load_config(path: str | None = None) -> Config:
     if "repo" in raw and isinstance(raw["repo"], list):
         for entry in raw["repo"]:
             if isinstance(entry, dict) and "name" in entry and "path" in entry:
-                cfg.repos.append(RepoConfig(name=str(entry["name"]), path=Path(entry["path"])))
+                cfg.repos.append(
+                    RepoConfig(
+                        name=str(entry["name"]),
+                        path=Path(entry["path"]),
+                    )
+                )
     return cfg

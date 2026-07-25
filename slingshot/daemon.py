@@ -11,15 +11,12 @@ import sys
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
-from slingshot.config import Config, RepoConfig
-from slingshot import gh
+from slingshot import gh, prompts, state
 from slingshot import git_utils as git
 from slingshot import logging as log
-from slingshot import prompts
-from slingshot import state
-
+from slingshot.config import Config, RepoConfig
 
 # ---------------------------------------------------------------------------
 # Worker status tracking
@@ -54,7 +51,8 @@ class WorkerState:
 
     @property
     def flight_label(self) -> str:
-        """The in-flight label currently on the issue (e.g. 'slingshot:implementing')."""
+        """The in-flight label currently on the issue."""
+        # e.g. 'slingshot:implementing'
         return state.WORK_TO_FLIGHT[self.phase]
 
     def branch_name(self) -> str:
@@ -161,7 +159,7 @@ class Daemon:
             if (issue.get("state") or "").upper() != "OPEN":
                 self._abort_worker(ws, "issue-closed")
                 continue
-            if ws.phase == "implement":
+            if ws.phase == "slingshot:implement":
                 continue
             prs = gh.pr_list_by_head(repo.name, ws.branch_name(), state="all")
             if prs:
@@ -186,7 +184,9 @@ class Daemon:
                 sl_labels = [lb["name"] for lb in issue.get("labels", [])
                              if lb["name"].startswith(state.SLINGSHOT_LABEL_PREFIX)]
                 if sl_labels:
-                    gh.issue_edit_labels(ws.repo.name, ws.issue_num, remove_labels=sl_labels)
+                    gh.issue_edit_labels(
+                        ws.repo.name, ws.issue_num, remove_labels=sl_labels,
+                    )
         except Exception:
             pass
         git.worktree_remove(ws.repo.path, ws.issue_num)
@@ -234,17 +234,20 @@ class Daemon:
         flight = state.WORK_TO_FLIGHT[work_state]
         self._transition_label(repo, issue_num, work_state, flight)
 
-        ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        ts = datetime.now(UTC).isoformat(timespec="seconds")
         claim_body = f"slingshot-claim: {self.daemon_id} {flight} {ts}"
         try:
             gh.issue_comment_create(repo.name, issue_num, claim_body)
-        except Exception:
+        except Exception as exc:
+            log.log(f"repo={repo.name} issue={issue_num} event=claim-error error={exc}")
             return False
 
         time.sleep(10)
 
         comments = gh.issue_comments(repo.name, issue_num)
-        sorted_comments = sorted(comments, key=lambda c: c.get("createdAt", ""), reverse=True)
+        sorted_comments = sorted(
+            comments, key=lambda c: c.get("createdAt", ""), reverse=True,
+        )
         newest = _newest_claim_comment(sorted_comments, flight)
         if newest is None:
             self._transition_label(repo, issue_num, flight, work_state)
@@ -273,10 +276,12 @@ class Daemon:
             git.fetch_origin(ws.repo.path)
             git.ensure_exclude(ws.repo.path)
 
-            if ws.phase == "implement":
+            if ws.phase == "slingshot:implement":
                 elapsed = self._do_implement(ws)
-            elif ws.phase == "review":
+            elif ws.phase == "slingshot:review":
                 elapsed = self._do_review(ws)
+            else:
+                raise ValueError(f"unknown worker phase {ws.phase!r}")
 
             log.log_agent_complete(ws.repo.name, ws.issue_num, ws.phase, elapsed)
         except Exception as exc:
@@ -466,7 +471,9 @@ class Daemon:
     # Failure handling
     # ------------------------------------------------------------------
 
-    def _handle_agent_failure(self, ws: WorkerState, current_label: str, reason: str) -> None:
+    def _handle_agent_failure(
+        self, ws: WorkerState, current_label: str, reason: str,
+    ) -> None:
         preclaim = state.FLIGHT_TO_PRECLAIM.get(current_label, current_label)
         self._transition_label(ws.repo, ws.issue_num, current_label, preclaim)
 
@@ -524,7 +531,9 @@ class Daemon:
         remove = [from_state] if from_state else []
         add = [to_state] if to_state else []
         try:
-            gh.issue_edit_labels(repo.name, issue_num, add_labels=add, remove_labels=remove)
+            gh.issue_edit_labels(
+                repo.name, issue_num, add_labels=add, remove_labels=remove,
+            )
             if from_state and to_state:
                 log.log_transition(repo.name, issue_num, from_state, to_state)
         except subprocess.CalledProcessError as e:
@@ -606,7 +615,9 @@ def _run_agent(
 # ---------------------------------------------------------------------------
 
 def _newest_claim_comment(comments: list[dict], flight_state: str) -> dict | None:
-    sorted_comments = sorted(comments, key=lambda c: c.get("createdAt", ""), reverse=True)
+    sorted_comments = sorted(
+        comments, key=lambda c: c.get("createdAt", ""), reverse=True,
+    )
     for c in sorted_comments:
         body = c.get("body", "")
         if body.startswith("slingshot-claim:") and flight_state in body:
@@ -617,8 +628,8 @@ def _newest_claim_comment(comments: list[dict], flight_state: str) -> dict | Non
 def _comment_age(created_at: str) -> int | None:
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
         try:
-            dt = datetime.strptime(created_at, fmt).replace(tzinfo=timezone.utc)
-            return int((datetime.now(timezone.utc) - dt).total_seconds())
+            dt = datetime.strptime(created_at, fmt).replace(tzinfo=UTC)
+            return int((datetime.now(UTC) - dt).total_seconds())
         except (ValueError, TypeError):
             pass
     return None
@@ -627,7 +638,7 @@ def _comment_age(created_at: str) -> int | None:
 def _comment_epoch(created_at: str) -> int | None:
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
         try:
-            dt = datetime.strptime(created_at, fmt).replace(tzinfo=timezone.utc)
+            dt = datetime.strptime(created_at, fmt).replace(tzinfo=UTC)
             return int(dt.timestamp())
         except (ValueError, TypeError):
             pass

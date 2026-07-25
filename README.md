@@ -47,6 +47,13 @@ ln -s "$(pwd)/.venv/bin/slingshot" /usr/local/bin/slingshot
 
 Replace `/usr/local/bin` with any directory on your PATH (e.g. `~/.local/bin`).
 
+## Development
+
+```bash
+pip install -e .[dev]
+make check
+```
+
 ## Install the `/slingshot-new` skill for opencode
 
 The repo ships a skill that lets opencode file specs as slingshot issues.

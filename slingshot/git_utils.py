@@ -6,7 +6,11 @@ import subprocess
 from pathlib import Path
 
 
-def _run(args: list[str], *, cwd: str | Path | None = None, capture: bool = True) -> subprocess.CompletedProcess:
+def _run(
+    args: list[str], *,
+    cwd: str | Path | None = None,
+    capture: bool = True,
+) -> subprocess.CompletedProcess:
     result = subprocess.run(
         args,
         capture_output=capture,
@@ -144,7 +148,9 @@ def worktree_remove(checkout: Path, issue_num: int) -> None:
     if not wt_path.exists():
         return
     try:
-        _run(["git", "worktree", "remove", str(wt_path), "--force"], cwd=checkout, capture=False)
+        _run([
+            "git", "worktree", "remove", str(wt_path), "--force",
+        ], cwd=checkout, capture=False)
     except subprocess.CalledProcessError:
         pass
 

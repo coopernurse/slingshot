@@ -17,7 +17,8 @@ REVIEW_SYSTEM = """You are an expert code reviewer. You will be given a specific
 and a diff (run: git diff origin/{default_branch}...HEAD). Review the implementation
 in four dimensions:
 
-1. **Spec fidelity** — does the implementation correctly and completely satisfy the spec?
+1. **Spec fidelity** — does the implementation correctly and completely satisfy
+   the spec?
 2. **Security** — are there any security vulnerabilities or risky patterns?
 3. **Regression risk** — could this change break existing behavior?
 4. **Naming & style** — does the code follow the project's conventions?
@@ -157,7 +158,7 @@ def compute_effective_verdict(verdict_data: dict) -> str:
     sections = verdict_data.get("sections", {})
     if verdict != "pass":
         return "fail"
-    for name, sec in sections.items():
+    for _name, sec in sections.items():
         if isinstance(sec, dict) and sec.get("status") != "pass":
             return "fail"
     return "pass"

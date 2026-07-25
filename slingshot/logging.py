@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import sys
-import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 _log_file: str | None = None
 
@@ -16,7 +14,7 @@ def setup_log_file(path: str | None) -> None:
 
 def log(msg: str) -> None:
     """Write a timestamped log line to stdout and optionally a file."""
-    ts = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    ts = datetime.now(UTC).isoformat(timespec="seconds")
     line = f"{ts} {msg}"
     print(line, flush=True)
     if _log_file:
@@ -40,7 +38,10 @@ def log_agent_launch(repo: str, issue: int, phase: str) -> None:
 
 
 def log_agent_complete(repo: str, issue: int, phase: str, elapsed_s: float) -> None:
-    log(f"repo={repo} issue={issue} event=agent-complete phase={phase} elapsed_s={elapsed_s:.0f}")
+    log(
+        f"repo={repo} issue={issue} event=agent-complete "
+        f"phase={phase} elapsed_s={elapsed_s:.0f}"
+    )
 
 
 def log_agent_failure(repo: str, issue: int, phase: str, reason: str) -> None:
