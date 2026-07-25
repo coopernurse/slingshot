@@ -93,6 +93,55 @@ path = "/Users/you/src/name"
 # path = "/Users/you/src/other"
 ```
 
+### Specifying the agent and model
+
+The `[agent]` section controls how slingshot invokes opencode for implement and
+review phases. The `{prompt_file}` placeholder is automatically replaced with the
+path to the rendered prompt.
+
+#### Use a specific model
+
+Use `--model` with the `provider/model` format (see `opencode models` to list
+available models):
+
+```toml
+[agent]
+implement_command = "opencode run --model anthropic/claude-sonnet-4-20250514 {prompt_file}"
+review_command    = "opencode run --model openai/gpt-5.1 {prompt_file}"
+```
+
+#### Use a specific opencode agent
+
+OpenCode agents define a system prompt, tool permissions, and optional model
+binding. List agents with `opencode agent list`:
+
+```toml
+[agent]
+implement_command = "opencode run --agent implementer {prompt_file}"
+review_command    = "opencode run --agent reviewer {prompt_file}"
+```
+
+#### Use a different backend
+
+Swap `opencode` for another agent backend entirely — slingshot just runs the
+shell command:
+
+```toml
+[agent]
+implement_command = "claude --print {prompt_file}"
+review_command    = "claude --print {prompt_file}"
+```
+
+#### Useful opencode `run` flags
+
+| Flag | Purpose |
+|---|---|
+| `--model provider/model` | Select a specific model |
+| `--agent name` | Use a named opencode agent |
+| `--variant variant` | Provider-specific reasoning effort |
+| `--auto` | Auto-approve permissions |
+| `--thinking` | Include thinking blocks in output |
+
 ## Usage
 
 ### File a spec as an issue
