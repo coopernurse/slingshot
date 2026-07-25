@@ -170,3 +170,35 @@ class TestFormatFailSummary:
         result = prompts.format_fail_summary(data)
         assert ":white_check_mark:" in result
         assert ":x:" in result
+
+
+class TestImplementPromptAnchoring:
+    def test_no_branch_creation_in_fresh(self):
+        result = prompts.render_implement_prompt("spec", "fresh")
+        assert "Create a new branch" not in result
+
+    def test_worktree_path_in_output(self):
+        result = prompts.render_implement_prompt(
+            "spec", "fresh", worktree_path="/tmp/wt",
+        )
+        assert "/tmp/wt" in result
+        assert "Do NOT create" in result
+
+    def test_no_slingshot_dir_in_output(self):
+        result = prompts.render_implement_prompt("spec", "fresh")
+        assert ".slingshot/" not in result
+
+    def test_no_worktree_section_when_path_none(self):
+        result = prompts.render_implement_prompt("spec", "fresh")
+        assert "Working directory" not in result
+
+
+class TestReviewPromptAnchoring:
+    def test_worktree_path_in_output(self):
+        result = prompts.render_review_prompt("spec", "main", worktree_path="/tmp/wt")
+        assert "/tmp/wt" in result
+        assert "Do NOT" in result
+
+    def test_no_worktree_section_when_path_none(self):
+        result = prompts.render_review_prompt("spec", "main")
+        assert "Working directory" not in result
