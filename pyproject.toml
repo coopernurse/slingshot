@@ -1,0 +1,16 @@
+[project]
+name = "slingshot"
+version = "0.1.0"
+description = "Agentic coding workflow driven by GitHub issues and PRs"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+slingshot = "slingshot.cli:main"
+
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["slingshot"]
