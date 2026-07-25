@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import shlex
+import shutil
 import signal
 import socket
 import subprocess
@@ -340,7 +341,7 @@ class Daemon:
         prompt = prompts.render_implement_prompt(
             spec, scenario, feedback, worktree_path=str(worktree),
         )
-        prompt_dir = ws.repo.path / ".slingshot" / "prompts"
+        prompt_dir = worktree / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = prompt_dir / f"{issue_num}-implement.md"
         prompt_file.write_text(prompt)
@@ -356,15 +357,13 @@ class Daemon:
         )
         elapsed = time.time() - start
 
-        if output:
-            _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
-
         if ws.aborted:
             return elapsed
 
         main_escaped = git.has_changes(ws.repo.path) and not main_before
         if main_escaped:
             if output:
+                _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
                 tail = _tail(output, 50)
                 log.log(
                     f"repo={ws.repo.name} issue={issue_num} "
@@ -377,6 +376,14 @@ class Daemon:
                 ws, ws.flight_label, "agent-escaped-worktree",
             )
             return elapsed
+
+        if output:
+            _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
+
+        # Archive prompt file to main repo for debugging
+        archive_dir = ws.repo.path / ".slingshot" / "prompts"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        _copy_file(prompt_file, archive_dir / prompt_file.name)
 
         if exit_code != 0 or not git.has_changes(worktree):
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
@@ -448,7 +455,7 @@ class Daemon:
         prompt = prompts.render_review_prompt(
             spec, default_branch, worktree_path=str(worktree),
         )
-        prompt_dir = ws.repo.path / ".slingshot" / "prompts"
+        prompt_dir = worktree / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = prompt_dir / f"{issue_num}-review.md"
         prompt_file.write_text(prompt)
@@ -464,15 +471,13 @@ class Daemon:
         )
         elapsed = time.time() - start
 
-        if output:
-            _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
-
         if ws.aborted:
             return elapsed
 
         main_escaped = git.has_changes(ws.repo.path) and not main_before
         if main_escaped:
             if output:
+                _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
                 tail = _tail(output, 50)
                 log.log(
                     f"repo={ws.repo.name} issue={issue_num} "
@@ -485,6 +490,14 @@ class Daemon:
                 ws, ws.flight_label, "agent-escaped-worktree",
             )
             return elapsed
+
+        if output:
+            _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
+
+        # Archive prompt file to main repo for debugging
+        archive_dir = ws.repo.path / ".slingshot" / "prompts"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        _copy_file(prompt_file, archive_dir / prompt_file.name)
 
         verdict_data = prompts.parse_verdict(output)
         if exit_code != 0 or verdict_data is None:
@@ -647,6 +660,10 @@ def _write_agent_log(
     return log_path
 
 
+def _copy_file(src, dst):
+    shutil.copy2(src, dst)
+
+
 def _tail(text, n):
     lines = text.splitlines()
     return "\n".join(lines[-n:])
@@ -725,7 +742,6 @@ def _comment_epoch(created_at: str) -> int | None:
 def register_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser("daemon", help="Run the slingshot polling daemon")
     p.add_argument("--config", help="Path to config file")
-    p.add_argument("--log-file", help="Path to daemon log file")
     p.add_argument("--once", action="store_true", help="Run one poll cycle and exit")
     p.set_defaults(func=cmd_daemon)
 
@@ -735,10 +751,8 @@ def cmd_daemon(args: argparse.Namespace) -> None:
 
     cfg = load_config(args.config)
     if not cfg.repos:
-        print("error: no repos configured. Edit ~/.config/slingshot/config.toml",
-              file=sys.stderr)
+        log.log("event=error msg=\"no repos configured\"")
         sys.exit(1)
 
-    log.setup_log_file(args.log_file)
     daemon = Daemon(cfg)
     daemon.run(once=args.once)

@@ -4,25 +4,12 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-_log_file: str | None = None
-
-
-def setup_log_file(path: str | None) -> None:
-    global _log_file
-    _log_file = path
-
 
 def log(msg: str) -> None:
-    """Write a timestamped log line to stdout and optionally a file."""
+    """Write a timestamped log line to stdout."""
     ts = datetime.now(UTC).isoformat(timespec="seconds")
     line = f"{ts} {msg}"
     print(line, flush=True)
-    if _log_file:
-        try:
-            with open(_log_file, "a") as fh:
-                fh.write(line + "\n")
-        except OSError:
-            pass
 
 
 def log_poll(repo: str, candidates: int, active: int) -> None:
