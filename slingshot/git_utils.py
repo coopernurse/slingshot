@@ -40,19 +40,6 @@ def fetch_origin(checkout: Path) -> None:
     _run(["git", "fetch", "origin"], cwd=checkout, capture=False)
 
 
-def ensure_exclude(checkout: Path) -> None:
-    """Append '.slingshot/' to .git/info/exclude if not already present."""
-    exclude = checkout / ".git" / "info" / "exclude"
-    entry = ".slingshot/"
-    if exclude.exists():
-        content = exclude.read_text()
-        if entry in content:
-            return
-    exclude.parent.mkdir(parents=True, exist_ok=True)
-    with open(exclude, "a") as fh:
-        fh.write(f"\n{entry}\n")
-
-
 def remote_branch_exists(checkout: Path, branch: str) -> bool:
     """Check whether 'origin/<branch>' exists."""
     return _check(["git", "rev-parse", "--verify", f"origin/{branch}"], cwd=checkout)
@@ -81,10 +68,27 @@ def default_branch(checkout: Path) -> str:
         return "main"
 
 
+def _repo_slug(path: Path) -> str:
+    """Return a filesystem-safe slug from a repo path.
+
+    ``/Users/james/src/slingshot`` → ``Users-james-src-slingshot``.
+    """
+    parts = [p for p in path.parts if p not in ("", "/")]
+    return "-".join(parts)
+
+
+def worktree_root() -> Path:
+    """Return the directory where slingshot worktrees are stored.
+
+    Layout: ``~/.local/share/slingshot/worktrees/<repo-slug>/<issue>/``.
+    """
+    return Path.home() / ".local" / "share" / "slingshot" / "worktrees"
+
+
 def create_worktree(checkout: Path, issue_num: int, base: str) -> Path:
     """Create a new worktree + branch from origin/<base>."""
     branch = f"slingshot/{issue_num}"
-    wt_path = checkout / ".slingshot" / "worktrees" / str(issue_num)
+    wt_path = worktree_root() / _repo_slug(checkout) / str(issue_num)
     wt_path.parent.mkdir(parents=True, exist_ok=True)
 
     # Remove stale worktree if present, then create
@@ -99,7 +103,7 @@ def create_worktree(checkout: Path, issue_num: int, base: str) -> Path:
 def create_worktree_from_remote(checkout: Path, issue_num: int) -> Path:
     """Create a worktree tracking an existing remote branch."""
     branch = f"slingshot/{issue_num}"
-    wt_path = checkout / ".slingshot" / "worktrees" / str(issue_num)
+    wt_path = worktree_root() / _repo_slug(checkout) / str(issue_num)
     wt_path.parent.mkdir(parents=True, exist_ok=True)
 
     worktree_remove(checkout, issue_num)
@@ -116,7 +120,7 @@ def checkout_in_worktree(worktree: Path, branch: str) -> None:
 
 
 def worktree_path(checkout: Path, issue_num: int) -> Path:
-    return checkout / ".slingshot" / "worktrees" / str(issue_num)
+    return worktree_root() / _repo_slug(checkout) / str(issue_num)
 
 
 def has_changes(worktree: Path) -> bool:
@@ -144,7 +148,7 @@ def push_branch(worktree: Path) -> None:
 
 def worktree_remove(checkout: Path, issue_num: int) -> None:
     """Remove a specific worktree if it exists."""
-    wt_path = checkout / ".slingshot" / "worktrees" / str(issue_num)
+    wt_path = worktree_root() / _repo_slug(checkout) / str(issue_num)
     if not wt_path.exists():
         return
     try:
@@ -156,16 +160,17 @@ def worktree_remove(checkout: Path, issue_num: int) -> None:
 
 
 def worktree_list(checkout: Path) -> list[Path]:
-    """Return paths of all worktrees for this checkout."""
+    """Return paths of all slingshot worktrees for this checkout."""
+    root = worktree_root() / _repo_slug(checkout)
+    if not root.exists():
+        return []
     try:
         result = _run(["git", "worktree", "list", "--porcelain"], cwd=checkout)
-        paths: list[Path] = []
+        known: set[str] = set()
         for line in result.stdout.splitlines():
             if line.startswith("worktree "):
-                p = Path(line.split(" ", 1)[1])
-                if ".slingshot/worktrees" in str(p):
-                    paths.append(p)
-        return paths
+                known.add(line.split(" ", 1)[1])
+        return [p for p in root.iterdir() if p.is_dir() and str(p) in known]
     except subprocess.CalledProcessError:
         return []
 

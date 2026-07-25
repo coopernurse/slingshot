@@ -9,7 +9,6 @@ a specification that will be provided below. Follow it faithfully.
 - Write production-quality code.
 - Run relevant tests before you finish — fix any failures.
 - Do NOT commit, push, or open pull requests. The automation handles that.
-- Do NOT create or modify files under .slingshot/.
 - When you are done, report a brief summary of what you changed."""
 
 
@@ -49,16 +48,18 @@ def render_implement_prompt(
     spec: str,
     scenario: str,
     feedback: str | None = None,
+    worktree_path: str | None = None,
 ) -> str:
     """Render the implement prompt for *scenario* (fresh/resume/rework).
 
     *feedback* is non-None only for the rework scenario.
+    *worktree_path* is the absolute path the agent must work inside.
     """
     if scenario == "fresh":
         instruction = (
-            "Create a new branch and implement the specification below "
-            "from scratch. This is a greenfield implementation — there is "
-            "no prior code to continue or fix."
+            "Implement the specification below from scratch. This is a "
+            "greenfield implementation — there is no prior code to continue "
+            "or fix."
         )
     elif scenario == "resume":
         instruction = (
@@ -77,6 +78,19 @@ def render_implement_prompt(
 
     parts = [IMPLEMENT_SYSTEM, "", "## Instructions", "", instruction, ""]
 
+    if worktree_path:
+        parts.extend([
+            "## Working directory",
+            "",
+            f"You are working in a git worktree of the repository at "
+            f"`{worktree_path}`.",
+            "Your current directory IS the repository — all file paths in the "
+            "spec are relative to it.",
+            "Do NOT create, rename, or switch branches, and do NOT run git "
+            "commands against any other checkout of this repository.",
+            "",
+        ])
+
     if feedback:
         parts.extend(["## Reviewer Feedback", "", feedback, ""])
 
@@ -91,7 +105,8 @@ def render_implement_prompt(
     return "\n".join(parts)
 
 
-def render_review_prompt(spec: str, default_branch: str) -> str:
+def render_review_prompt(spec: str, default_branch: str,
+                        worktree_path: str | None = None) -> str:
     """Render the review prompt.
 
     The agent is expected to run: git diff origin/{default_branch}...HEAD
@@ -106,10 +121,22 @@ def render_review_prompt(spec: str, default_branch: str) -> str:
         "3. Provide specific, actionable feedback for each failing dimension.",
         "4. End your output with the JSON verdict block as described above.",
         "",
+    ]
+
+    if worktree_path:
+        parts.extend([
+            "## Working directory",
+            "",
+            f"You are working in a git worktree at `{worktree_path}`. Do NOT "
+            "run git commands against any other checkout of this repository.",
+            "",
+        ])
+
+    parts.extend([
         "## Specification",
         "",
         spec,
-    ]
+    ])
     return "\n".join(parts)
 
 

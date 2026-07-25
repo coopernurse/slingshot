@@ -83,7 +83,6 @@ class Daemon:
 
         for repo in self.config.repos:
             git.prune_orphan_worktrees(repo.path, self._protected_issue_nums(repo))
-            git.ensure_exclude(repo.path)
 
         while not self._stop.is_set():
             self._poll_cycle()
@@ -274,7 +273,6 @@ class Daemon:
         elapsed = 0.0
         try:
             git.fetch_origin(ws.repo.path)
-            git.ensure_exclude(ws.repo.path)
 
             if ws.phase == "slingshot:implement":
                 elapsed = self._do_implement(ws)
@@ -337,7 +335,11 @@ class Daemon:
         else:
             worktree = git.create_worktree_from_remote(ws.repo.path, issue_num)
 
-        prompt = prompts.render_implement_prompt(spec, scenario, feedback)
+        main_before = git.has_changes(ws.repo.path)
+
+        prompt = prompts.render_implement_prompt(
+            spec, scenario, feedback, worktree_path=str(worktree),
+        )
         prompt_dir = ws.repo.path / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = prompt_dir / f"{issue_num}-implement.md"
@@ -355,6 +357,16 @@ class Daemon:
         elapsed = time.time() - start
 
         if ws.aborted:
+            return elapsed
+
+        main_escaped = git.has_changes(ws.repo.path) and not main_before
+        if main_escaped:
+            log.log_agent_failure(
+                ws.repo.name, issue_num, "implement", "agent-escaped-worktree",
+            )
+            self._handle_agent_failure(
+                ws, ws.flight_label, "agent-escaped-worktree",
+            )
             return elapsed
 
         if exit_code != 0 or not git.has_changes(worktree):
@@ -416,7 +428,11 @@ class Daemon:
         default_branch = self._default_branch_for(ws.repo)
         spec = ws.issue_body or ""
 
-        prompt = prompts.render_review_prompt(spec, default_branch)
+        main_before = git.has_changes(ws.repo.path)
+
+        prompt = prompts.render_review_prompt(
+            spec, default_branch, worktree_path=str(worktree),
+        )
         prompt_dir = ws.repo.path / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = prompt_dir / f"{issue_num}-review.md"
@@ -434,6 +450,16 @@ class Daemon:
         elapsed = time.time() - start
 
         if ws.aborted:
+            return elapsed
+
+        main_escaped = git.has_changes(ws.repo.path) and not main_before
+        if main_escaped:
+            log.log_agent_failure(
+                ws.repo.name, issue_num, "review", "agent-escaped-worktree",
+            )
+            self._handle_agent_failure(
+                ws, ws.flight_label, "agent-escaped-worktree",
+            )
             return elapsed
 
         verdict_data = prompts.parse_verdict(output)
