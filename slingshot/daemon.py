@@ -356,11 +356,20 @@ class Daemon:
         )
         elapsed = time.time() - start
 
+        if output:
+            _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
+
         if ws.aborted:
             return elapsed
 
         main_escaped = git.has_changes(ws.repo.path) and not main_before
         if main_escaped:
+            if output:
+                tail = _tail(output, 50)
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=agent-output tail=\n{tail}"
+                )
             log.log_agent_failure(
                 ws.repo.name, issue_num, "implement", "agent-escaped-worktree",
             )
@@ -371,6 +380,12 @@ class Daemon:
 
         if exit_code != 0 or not git.has_changes(worktree):
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
+            if output:
+                tail = _tail(output, 50)
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=agent-output tail=\n{tail}"
+                )
             log.log_agent_failure(ws.repo.name, issue_num, "implement", reason)
             self._handle_agent_failure(ws, ws.flight_label, reason)
             return elapsed
@@ -449,11 +464,20 @@ class Daemon:
         )
         elapsed = time.time() - start
 
+        if output:
+            _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
+
         if ws.aborted:
             return elapsed
 
         main_escaped = git.has_changes(ws.repo.path) and not main_before
         if main_escaped:
+            if output:
+                tail = _tail(output, 50)
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=agent-output tail=\n{tail}"
+                )
             log.log_agent_failure(
                 ws.repo.name, issue_num, "review", "agent-escaped-worktree",
             )
@@ -465,6 +489,12 @@ class Daemon:
         verdict_data = prompts.parse_verdict(output)
         if exit_code != 0 or verdict_data is None:
             reason = f"exit={exit_code}" if exit_code != 0 else "no-verdict"
+            if output:
+                tail = _tail(output, 50)
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=agent-output tail=\n{tail}"
+                )
             log.log_agent_failure(ws.repo.name, issue_num, "review", reason)
             self._handle_agent_failure(ws, ws.flight_label, reason)
             return elapsed
@@ -604,6 +634,23 @@ class Daemon:
 # ---------------------------------------------------------------------------
 # Agent runner
 # ---------------------------------------------------------------------------
+
+def _write_agent_log(
+    repo_path, issue_num, phase, output,
+):
+    log_dir = repo_path / ".slingshot" / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now(UTC).strftime("%Y%m%d-%H%M%S")
+    short_phase = phase.split(":")[-1]
+    log_path = log_dir / f"{issue_num}-{short_phase}-{ts}.log"
+    log_path.write_text(output)
+    return log_path
+
+
+def _tail(text, n):
+    lines = text.splitlines()
+    return "\n".join(lines[-n:])
+
 
 def _run_agent(
     command_template: str, prompt_file: str, *,

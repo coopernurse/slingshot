@@ -93,6 +93,10 @@ def create_worktree(checkout: Path, issue_num: int, base: str) -> Path:
 
     # Remove stale worktree if present, then create
     worktree_remove(checkout, issue_num)
+    # Remove stale local branch from a previous failed attempt that
+    # never pushed (e.g. empty-diff).  If the branch had been pushed,
+    # remote_branch_exists would have routed us to resume/rework.
+    _delete_branch_if_exists(checkout, branch)
     _run([
         "git", "worktree", "add", str(wt_path),
         "-b", branch, f"origin/{base}",
@@ -117,6 +121,14 @@ def create_worktree_from_remote(checkout: Path, issue_num: int) -> Path:
 def checkout_in_worktree(worktree: Path, branch: str) -> None:
     """In an existing worktree, checkout a branch (tracking origin)."""
     _run(["git", "checkout", "-B", branch], cwd=worktree, capture=False)
+
+
+def _delete_branch_if_exists(checkout: Path, branch: str) -> None:
+    """Delete a local branch if it exists (no-op otherwise)."""
+    try:
+        _run(["git", "branch", "-D", branch], cwd=checkout, capture=True)
+    except subprocess.CalledProcessError:
+        pass
 
 
 def worktree_path(checkout: Path, issue_num: int) -> Path:
