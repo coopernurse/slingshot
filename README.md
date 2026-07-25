@@ -178,9 +178,6 @@ The daemon polls GitHub for issues labeled `slingshot:implement` or
 # Run one cycle and exit (useful for testing)
 slingshot daemon --once
 
-# Tee logs to a file
-slingshot daemon --log-file /var/log/slingshot.log
-
 # Use a non-default config path
 slingshot daemon --config /path/to/config.toml
 ```
