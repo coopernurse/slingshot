@@ -128,7 +128,7 @@ def checkout_in_worktree(worktree: Path, branch: str) -> None:
 def _delete_branch_if_exists(checkout: Path, branch: str) -> None:
     """Delete a local branch if it exists (no-op otherwise)."""
     try:
-        _run(["git", "branch", "-D", branch], cwd=checkout, capture=True)
+        _run(["git", "branch", "-D", branch], cwd=checkout)
     except subprocess.CalledProcessError:
         pass
 

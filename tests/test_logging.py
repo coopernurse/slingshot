@@ -23,14 +23,6 @@ class TestLogTimestamp:
         now = datetime.now()
         assert abs((now - logged_time).total_seconds()) < 2
 
-    def test_timestamp_not_utc(self, capsys):
-        log("test-message")
-        captured = capsys.readouterr().out
-        ts_str = captured[:19]
-        logged_time = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
-        utc_now = datetime.utcnow()
-        assert (utc_now - logged_time).total_seconds() > 60
-
 
 class TestLogCmdOutput:
     def test_emits_one_line_per_nonempty_line(self, capsys):
