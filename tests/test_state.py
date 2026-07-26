@@ -45,3 +45,23 @@ class TestStateMachineInvariants:
         expected = state.WORK_STATES | state.IN_FLIGHT_STATES | state.TERMINAL_STATES
         assert set(state.SLINGSHOT_LABELS) == expected
         assert len(state.SLINGSHOT_LABELS) == len(expected)
+
+    def test_awaiting_checks_in_labels(self):
+        assert state.AWAITING_CHECKS in state.SLINGSHOT_LABELS
+
+    def test_awaiting_checks_in_terminal(self):
+        assert state.AWAITING_CHECKS in state.TERMINAL_STATES
+
+    def test_awaiting_checks_in_watcher_states(self):
+        assert state.AWAITING_CHECKS in state.WATCHER_STATES
+
+    def test_watcher_states_never_claimed(self):
+        # Watcher states can overlap with work states (review is both).
+        # Non-work watcher states must not be in work or in-flight sets.
+        non_work_watchers = state.WATCHER_STATES - state.WORK_STATES
+        for s in non_work_watchers:
+            assert s not in state.IN_FLIGHT_STATES
+
+    def test_watcher_states_are_subset_of_labels(self):
+        for s in state.WATCHER_STATES:
+            assert s in state.SLINGSHOT_LABELS

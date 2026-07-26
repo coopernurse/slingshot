@@ -16,11 +16,12 @@ import time
 import uuid
 from datetime import UTC, datetime
 
-from slingshot import gh, prompts, state
+from slingshot import gh, prompts, review_items, state
 from slingshot import git_utils as git
 from slingshot import logging as log
 from slingshot.config import Config, RepoConfig
 from slingshot.prompts import CI_FAIL_MARKER, REVIEW_FAIL_MARKER
+from slingshot.review_items import ADDRESSED_MARKER
 
 # ---------------------------------------------------------------------------
 # Worker status tracking
@@ -74,6 +75,7 @@ class Daemon:
         self._workers: dict[str, WorkerState] = {}
         self._lock = threading.Lock()
         self._stop = threading.Event()
+        self._debounce: dict[str, float] = {}
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -116,6 +118,8 @@ class Daemon:
         for repo in self.config.repos:
             self._reap(repo)
             self._abort_check(repo)
+        for repo in self.config.repos:
+            self._review_items_check(repo)
         for repo in self.config.repos:
             self._ci_check(repo)
         for repo in self.config.repos:
@@ -164,6 +168,16 @@ class Daemon:
             if (issue.get("state") or "").upper() != "OPEN":
                 self._abort_worker(ws, "issue-closed")
                 continue
+
+            # Label-mismatch: if the issue's slingshot label changed beneath
+            # a live worker, exit without writing any transition.
+            current_labels = {lb["name"] for lb in issue.get("labels", [])
+                              if lb["name"].startswith(state.SLINGSHOT_LABEL_PREFIX)}
+            expected = {ws.flight_label}
+            if current_labels and current_labels != expected:
+                self._abort_worker(ws, "label-mismatch")
+                continue
+
             if ws.phase == "slingshot:implement":
                 continue
             prs = gh.pr_list_by_head(repo.name, ws.branch_name(), state="all")
@@ -199,7 +213,159 @@ class Daemon:
             self._workers.pop(ws.key(), None)
 
     # ------------------------------------------------------------------
-    # CI check
+    # Review-items watcher
+    # ------------------------------------------------------------------
+
+    def _review_items_check(self, repo: RepoConfig) -> None:
+        for watch_state in sorted(state.WATCHER_STATES):
+            try:
+                issues = gh.issue_list(repo.name, watch_state)
+            except Exception:
+                continue
+            for issue in issues:
+                issue_num = issue["number"]
+                prs = gh.pr_list_by_head(
+                    repo.name, f"slingshot/{issue_num}", state="all",
+                )
+                if not prs:
+                    continue
+                pr = prs[0]
+                if pr.get("mergedAt") or (pr.get("state") or "").upper() in (
+                    "CLOSED", "MERGED"
+                ):
+                    continue
+                if (pr.get("state") or "").upper() != "OPEN":
+                    continue
+                pr_num = pr["number"]
+
+                if self._local_worker_holds(repo.name, issue_num):
+                    continue
+
+                if watch_state == "slingshot:blocked":
+                    self._check_blocked_unblock(repo, issue_num, pr_num)
+                    continue
+
+                if watch_state == "slingshot:awaiting-checks":
+                    self._check_awaiting_checks(repo, issue_num, pr_num)
+                    continue
+
+                # review and approved states
+                self._check_items_bounce(repo, issue_num, pr_num, watch_state)
+
+    def _check_items_bounce(
+        self, repo: RepoConfig, issue_num: int, pr_num: int,
+        current_state: str,
+    ) -> None:
+        try:
+            all_items, _ = review_items.fetch_items(repo.name, pr_num)
+        except Exception:
+            return
+
+        qualified = review_items.qualifying(all_items, self._daemon_login())
+        if not qualified:
+            return
+
+        unaddressed, _, _ = review_items.partition(qualified)
+        if not unaddressed:
+            return
+
+        debounce_key = f"{repo.name}/{issue_num}"
+        if time.time() < self._debounce.get(debounce_key, 0):
+            return
+
+        debounce_secs = self.config.comment_debounce_seconds
+        self._debounce[debounce_key] = time.time() + debounce_secs
+        log.log(
+            f"repo={repo.name} issue={issue_num} "
+            f"event=items-bounce from={current_state} "
+            f"count={len(unaddressed)} debounce={debounce_secs}s"
+        )
+        self._transition_label(repo, issue_num, current_state, "slingshot:implement")
+
+    def _check_awaiting_checks(
+        self, repo: RepoConfig, issue_num: int, pr_num: int,
+    ) -> None:
+        try:
+            checks_status = gh.pr_check_status(repo.name, pr_num)
+            mergeable = gh.pr_mergeable(repo.name, pr_num)
+            all_items, _ = review_items.fetch_items(repo.name, pr_num)
+        except Exception:
+            return
+
+        qualified = review_items.qualifying(all_items, self._daemon_login())
+        unaddressed, addressed_unresolved, _ = review_items.partition(qualified)
+
+        if unaddressed:
+            self._transition_label(
+                repo, issue_num, state.AWAITING_CHECKS, "slingshot:implement",
+            )
+            return
+
+        checks = checks_status.get("checks", [])
+        pending = any(not c["completed"] for c in checks)
+        failing = any(c["failed"] for c in checks)
+
+        if pending or mergeable == "UNKNOWN" or mergeable is None:
+            return
+
+        if failing or mergeable == "CONFLICTING":
+            self._transition_label(
+                repo, issue_num, state.AWAITING_CHECKS, "slingshot:implement",
+            )
+            return
+
+        # green ∧ mergeable
+        self._transition_label(
+            repo, issue_num, state.AWAITING_CHECKS, "slingshot:approved",
+        )
+        if addressed_unresolved:
+            self._post_nudge(repo, issue_num, pr_num, addressed_unresolved)
+
+    def _check_blocked_unblock(
+        self, repo: RepoConfig, issue_num: int, pr_num: int,
+    ) -> None:
+        try:
+            all_items, _ = review_items.fetch_items(repo.name, pr_num)
+            issue_comments = gh.issue_comments(repo.name, issue_num)
+        except Exception:
+            return
+
+        qualified = review_items.qualifying(all_items, self._daemon_login())
+        if not qualified:
+            return
+
+        # Blocked watermark: newest non-claim issue comment timestamp
+        blocked_watermark = 0
+        for c in sorted(issue_comments,
+                        key=lambda x: x.get("createdAt", ""), reverse=True):
+            body = c.get("body", "")
+            if body.startswith("slingshot-claim:"):
+                continue
+            blocked_watermark = _comment_epoch(c.get("createdAt", ""))
+            break
+
+        newest_item = review_items.get_newest_item_epoch(qualified)
+        if newest_item <= blocked_watermark:
+            return
+
+        log.log(
+            f"repo={repo.name} issue={issue_num} "
+            f"event=unblock watermark={blocked_watermark} "
+            f"newest_item={newest_item}"
+        )
+        self._transition_label(
+            repo, issue_num, "slingshot:blocked", "slingshot:implement",
+        )
+        # Post a marker comment on the issue to break the consecutive-error streak
+        try:
+            gh.issue_comment_create(
+                repo.name, issue_num, "<!-- slingshot:human-unblock -->",
+            )
+        except Exception:
+            pass
+
+    # ------------------------------------------------------------------
+    # CI check (extended for merge conflicts + items)
     # ------------------------------------------------------------------
 
     def _ci_check(self, repo: RepoConfig) -> None:
@@ -230,6 +396,33 @@ class Daemon:
                 continue
 
             pr_num = pr["number"]
+
+            # Check for unaddressed items (new /slingshot comments)
+            try:
+                all_items, _ = review_items.fetch_items(repo.name, pr_num)
+                qualified = review_items.qualifying(
+                    all_items, self._daemon_login(),
+                )
+                unaddressed, _, _ = review_items.partition(qualified)
+            except Exception:
+                unaddressed = []
+
+            if unaddressed:
+                self._transition_label(
+                    repo, issue_num, "slingshot:approved", "slingshot:implement",
+                )
+                continue
+
+            # Check for merge conflicts
+            try:
+                mergeable = gh.pr_mergeable(repo.name, pr_num)
+            except Exception:
+                mergeable = None
+            if mergeable == "CONFLICTING":
+                self._transition_label(
+                    repo, issue_num, "slingshot:approved", "slingshot:implement",
+                )
+                continue
 
             try:
                 status = gh.pr_check_status(repo.name, pr_num)
@@ -417,8 +610,28 @@ class Daemon:
         pr_num, fail_markers = self._find_pr_and_fail_count(ws.repo, branch)
         feedback = None
 
+        # Check for /slingshot items on the PR
+        implement_items: list[review_items.ReviewItem] = []
+        is_conflicting = False
+        if pr_num is not None:
+            try:
+                all_items, _ = review_items.fetch_items(ws.repo.name, pr_num)
+                qualified = review_items.qualifying(
+                    all_items, self._daemon_login(),
+                )
+                unaddressed, _, _ = review_items.partition(qualified)
+                implement_items = unaddressed
+            except Exception:
+                pass
+            try:
+                mergeable = gh.pr_mergeable(ws.repo.name, pr_num)
+                if mergeable == "CONFLICTING":
+                    is_conflicting = True
+            except Exception:
+                pass
+
         if branch_exists:
-            if fail_markers > 0 and pr_num is not None:
+            if (fail_markers > 0 or implement_items) and pr_num is not None:
                 last_push = git.branch_last_commit_epoch(ws.repo.path, branch)
                 comments = gh.pr_comments(ws.repo.name, pr_num)
                 fail_comments: list[str] = []
@@ -431,14 +644,15 @@ class Daemon:
                         if epoch is not None and epoch < last_push:
                             continue
                     fail_comments.append(body)
-                if fail_comments:
+                if fail_comments or implement_items:
                     scenario = "rework"
-                    feedback = "\n\n---\n\n".join(fail_comments)
+                    if fail_comments:
+                        feedback = "\n\n---\n\n".join(fail_comments)
                 else:
-                    # Every fail comment predates the branch tip, so the
-                    # pushed branch already addresses all known feedback.
-                    # Running the agent would produce a guaranteed empty
-                    # diff; skip straight to the successor state.
+                    # Every fail comment and /slingshot item predates the
+                    # branch tip.  No unaddressed items exist.  Skip agent run.
+                    # Check items live — not by timestamp.
+                    # Unresolved items defeat the "done" shortcut.
                     scenario = "done"
             else:
                 scenario = "resume"
@@ -448,7 +662,7 @@ class Daemon:
         if scenario == "done":
             log.log(
                 f"repo={ws.repo.name} issue={issue_num} "
-                f"event=rework-skip reason=no-fresh-feedback"
+                f"event=rework-skip reason=no-fresh-feedback-or-items"
             )
             successor = state.WORK_TO_SUCCESSOR[ws.phase]
             self._transition_label(ws.repo, issue_num, ws.flight_label, successor)
@@ -467,6 +681,8 @@ class Daemon:
 
         prompt = prompts.render_implement_prompt(
             spec, scenario, feedback, worktree_path=str(worktree),
+            items=implement_items if implement_items else None,
+            is_conflicting=is_conflicting,
         )
         prompt_dir = worktree / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -511,6 +727,19 @@ class Daemon:
         archive_dir = ws.repo.path / ".slingshot" / "prompts"
         archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_file(prompt_file, archive_dir / prompt_file.name)
+
+        # Check item dispositions — must be valid JSON when items are assigned
+        dispositions_data = None
+        if implement_items:
+            dispositions_data = review_items.parse_dispositions(output)
+            if not dispositions_data:
+                log.log_agent_failure(
+                    ws.repo.name, issue_num, "implement", "no-items-disposition",
+                )
+                self._handle_agent_failure(
+                    ws, ws.flight_label, "no-items-disposition",
+                )
+                return elapsed
 
         if exit_code != 0 or not git.has_changes(worktree):
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
@@ -558,6 +787,19 @@ class Daemon:
             self._handle_agent_failure(ws, ws.flight_label, "pr-create-failed")
             return elapsed
 
+        # Post item replies after successful push
+        if dispositions_data and pr_num is not None:
+            try:
+                self._post_item_replies(
+                    ws.repo, issue_num, pr_num, implement_items,
+                    dispositions_data,
+                )
+            except Exception as exc:
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=post-replies-error error={exc}"
+                )
+
         successor = state.WORK_TO_SUCCESSOR[ws.phase]
         self._transition_label(ws.repo, issue_num, ws.flight_label, successor)
         return elapsed
@@ -580,6 +822,58 @@ class Daemon:
         if not worktree.exists():
             worktree = git.create_worktree_from_remote(ws.repo.path, issue_num)
 
+        # --- Review-pass gate: check for unaddressed items ---------------
+        try:
+            all_items, _ = review_items.fetch_items(ws.repo.name, pr_num)
+            qualified = review_items.qualifying(all_items, self._daemon_login())
+            unaddressed, addressed_unresolved, resolved = review_items.partition(
+                qualified,
+            )
+        except Exception:
+            unaddressed, addressed_unresolved, resolved = [], [], []
+
+        if unaddressed:
+            log.log(
+                f"repo={ws.repo.name} issue={issue_num} "
+                f"event=review-gate-bounce reason=unaddressed-items"
+            )
+            self._transition_label(
+                ws.repo, issue_num, ws.flight_label, "slingshot:implement",
+            )
+            return 0.0
+
+        try:
+            checks_status = gh.pr_check_status(ws.repo.name, pr_num)
+        except Exception:
+            checks_status = {"sha": "", "checks": []}
+        checks = checks_status.get("checks", [])
+        checks_pending = any(not c["completed"] for c in checks)
+        checks_failing = any(c["failed"] for c in checks)
+
+        try:
+            mergeable = gh.pr_mergeable(ws.repo.name, pr_num)
+        except Exception:
+            mergeable = None
+
+        if checks_pending or mergeable == "UNKNOWN" or mergeable is None:
+            if checks:
+                self._transition_label(
+                    ws.repo, issue_num, ws.flight_label, state.AWAITING_CHECKS,
+                )
+            else:
+                self._transition_label(
+                    ws.repo, issue_num, ws.flight_label, state.AWAITING_CHECKS,
+                )
+            return 0.0
+
+        if checks_failing or mergeable == "CONFLICTING":
+            self._transition_label(
+                ws.repo, issue_num, ws.flight_label, "slingshot:implement",
+            )
+            return 0.0
+
+        # --- Run the review agent ---------------------------------------
+
         default_branch = self._default_branch_for(ws.repo)
         spec = ws.issue_body or ""
 
@@ -587,6 +881,9 @@ class Daemon:
 
         prompt = prompts.render_review_prompt(
             spec, default_branch, worktree_path=str(worktree),
+            addressed_unresolved=addressed_unresolved if addressed_unresolved
+            else None,
+            resolved=resolved if resolved else None,
         )
         prompt_dir = worktree / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
@@ -649,11 +946,67 @@ class Daemon:
         if effective == "pass":
             summary = prompts.format_pass_summary(verdict_data)
             gh.pr_comment_create(ws.repo.name, pr_num, summary)
-            successor = state.WORK_TO_SUCCESSOR[ws.phase]
-            self._transition_label(ws.repo, issue_num, ws.flight_label, successor)
+
+            # Post disputed markers for unsolved human items
+            human_items = verdict_data.get("human_items")
+            if isinstance(human_items, dict) and human_items.get("status") == "fail":
+                unsolved = human_items.get("unsolved", [])
+                self._post_disputed_replies(ws.repo.name, pr_num, unsolved,
+                                           all_items)
+
+            # Check pass-gate again: unaddressed items may have appeared
+            # while review was running
+            try:
+                all_items2, _ = review_items.fetch_items(ws.repo.name, pr_num)
+                qualified2 = review_items.qualifying(
+                    all_items2, self._daemon_login(),
+                )
+                unaddr2, addr2, _ = review_items.partition(qualified2)
+            except Exception:
+                unaddr2, addr2 = [], []
+
+            if unaddr2:
+                self._transition_label(
+                    ws.repo, issue_num, ws.flight_label, "slingshot:implement",
+                )
+                return elapsed
+
+            # Re-check checks and mergeable
+            try:
+                checks2 = gh.pr_check_status(ws.repo.name, pr_num)
+                m2 = gh.pr_mergeable(ws.repo.name, pr_num)
+            except Exception:
+                checks2 = {"sha": "", "checks": []}
+                m2 = None
+
+            cks2 = checks2.get("checks", [])
+            if any(not c["completed"] for c in cks2) or m2 == "UNKNOWN" or m2 is None:
+                self._transition_label(
+                    ws.repo, issue_num, ws.flight_label, state.AWAITING_CHECKS,
+                )
+                return elapsed
+
+            if any(c["failed"] for c in cks2) or m2 == "CONFLICTING":
+                self._transition_label(
+                    ws.repo, issue_num, ws.flight_label, "slingshot:implement",
+                )
+                return elapsed
+
+            self._transition_label(
+                ws.repo, issue_num, ws.flight_label, "slingshot:approved",
+            )
+            if addr2:
+                self._post_nudge(ws.repo.name, issue_num, pr_num, addr2)
         else:
             summary = prompts.format_fail_summary(verdict_data)
             gh.pr_comment_create(ws.repo.name, pr_num, summary)
+
+            # Post disputed markers for unsolved human items
+            human_items = verdict_data.get("human_items")
+            if isinstance(human_items, dict) and human_items.get("status") == "fail":
+                unsolved = human_items.get("unsolved", [])
+                self._post_disputed_replies(ws.repo.name, pr_num, unsolved,
+                                           all_items)
 
             comments = gh.pr_comments(ws.repo.name, pr_num)
             fail_count = sum(
@@ -668,6 +1021,141 @@ class Daemon:
                                        "slingshot:implement")
 
         return elapsed
+
+    # ------------------------------------------------------------------
+    # Review items: reply posting
+    # ------------------------------------------------------------------
+
+    def _daemon_login(self) -> str:
+        try:
+            result = subprocess.run(
+                ["gh", "api", "user", "--jq", ".login"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                return result.stdout.strip()
+        except Exception:
+            pass
+        return ""
+
+    def _post_item_replies(
+        self,
+        repo: RepoConfig,
+        issue_num: int,
+        pr_num: int,
+        items: list[review_items.ReviewItem],
+        dispositions: dict,
+    ) -> None:
+        try:
+            sha_result = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                capture_output=True, text=True, timeout=10,
+                cwd=str(git.worktree_path(repo.path, issue_num)),
+            )
+            short_sha = (
+                sha_result.stdout.strip()[:7]
+                if sha_result.returncode == 0 else "unknown"
+            )
+        except Exception:
+            short_sha = "unknown"
+
+        disp_list = dispositions.get("items", [])
+        disp_map: dict[str, dict] = {}
+        for d in disp_list:
+            if isinstance(d, dict) and "id" in d:
+                disp_map[d["id"]] = d
+
+        inline_replies: list[tuple[str, str]] = []
+        conv_summary_parts: list[str] = []
+        conv_markers: list[str] = []
+
+        for item in items:
+            disp = disp_map.get(item.alias)
+            if disp is None:
+                continue
+            action = disp.get("action", "unclear")
+            note = disp.get("note", "")
+
+            if item.kind == "inline" and item.comment_id:
+                reply_body = (
+                    f"Addressed in `{short_sha}`: {note}\n"
+                    f"{ADDRESSED_MARKER}{item.thread_node_id} -->"
+                )
+                inline_replies.append((item.comment_id, reply_body))
+
+            elif item.kind == "conversation" and item.conversation_comment_id:
+                action_label = {"fixed": "Fixed", "wontfix": "Won't fix",
+                                "unclear": "Unclear"}.get(action, action)
+                conv_summary_parts.append(
+                    f"**{item.alias}** ({action_label}): {note}"
+                )
+                conv_markers.append(
+                    f"{ADDRESSED_MARKER}conv:{item.conversation_comment_id} -->"
+                )
+
+        for comment_id, reply_body in inline_replies:
+            try:
+                gh.pr_review_reply(repo.name, pr_num, comment_id, reply_body)
+            except Exception:
+                pass
+
+        if conv_summary_parts:
+            conv_body = (
+                "## Slingshot: Human Review Items — Conversation\n\n"
+                + "\n\n".join(conv_summary_parts)
+                + "\n\n"
+                + "\n".join(conv_markers)
+            )
+            try:
+                gh.pr_comment_create(repo.name, pr_num, conv_body)
+            except Exception:
+                pass
+
+    def _post_disputed_replies(
+        self,
+        repo_name: str,
+        pr_num: int,
+        unsolved: list[dict],
+        all_items: list[review_items.ReviewItem],
+    ) -> None:
+        item_map: dict[str, review_items.ReviewItem] = {}
+        for it in all_items:
+            item_map[it.alias] = it
+
+        for entry in unsolved:
+            alias = entry.get("id", "")
+            note = entry.get("note", "")
+            item = item_map.get(alias)
+            if item is None:
+                continue
+            if item.kind == "inline" and item.comment_id:
+                reply_body = (
+                    f"<!-- slingshot:disputed {item.thread_node_id} -->\n"
+                    f"**Disputed:** {note}"
+                )
+                try:
+                    gh.pr_review_reply(repo_name, pr_num, item.comment_id,
+                                       reply_body)
+                except Exception:
+                    pass
+
+    def _post_nudge(
+        self,
+        repo_name: str,
+        issue_num: int,
+        pr_num: int,
+        addressed_unresolved: list[review_items.ReviewItem],
+    ) -> None:
+        count = len(addressed_unresolved)
+        body = (
+            f"**{count} thread{'s' if count != 1 else ''} awaiting "
+            f"your resolution.** Please resolve the addressed review "
+            f"threads when ready."
+        )
+        try:
+            gh.pr_comment_create(repo_name, pr_num, body)
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     # Failure handling

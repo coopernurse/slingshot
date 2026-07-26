@@ -5,7 +5,7 @@ import sys
 import time
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from slingshot.config import Config, RepoConfig
 from slingshot.daemon import (
@@ -17,6 +17,7 @@ from slingshot.daemon import (
     _run_agent,
 )
 from slingshot.prompts import CI_FAIL_MARKER, REVIEW_FAIL_MARKER
+from slingshot.review_items import ReviewItem
 
 
 def _make_repo():
@@ -623,3 +624,339 @@ class TestRunAgent:
         assert code == -1
         assert output == "agent timed out"
         assert time.time() - start < 15
+
+
+# ---------------------------------------------------------------------------
+# Review-items watcher tests
+# ---------------------------------------------------------------------------
+
+
+class TestItemsBounce:
+    def test_review_to_implement_on_unaddressed_items(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline")
+        daemon._daemon_login = lambda: "daemon-bot"
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([item], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[item]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([item], [], [])), \
+             patch("slingshot.daemon.review_items.get_newest_item_epoch",
+                   return_value=1735689600):
+            daemon._check_items_bounce(repo, 1, 10, "slingshot:review")
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:review", "slingshot:implement",
+        )
+
+    def test_no_bounce_when_no_unaddressed(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline")
+        daemon._daemon_login = lambda: "daemon-bot"
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([item], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[item]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [item], [])), \
+             patch("slingshot.daemon.review_items.get_newest_item_epoch",
+                   return_value=0):
+            daemon._check_items_bounce(repo, 1, 10, "slingshot:review")
+
+        mock_tx.assert_not_called()
+
+    def test_debounce_suppresses_rapid_bounces(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo], comment_debounce_seconds=180)
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline")
+        daemon._daemon_login = lambda: "daemon-bot"
+
+        # First call sets the debounce
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([item], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[item]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([item], [], [])), \
+             patch("slingshot.daemon.review_items.get_newest_item_epoch",
+                   return_value=1735689600):
+            daemon._check_items_bounce(repo, 1, 10, "slingshot:review")
+            daemon._check_items_bounce(repo, 1, 10, "slingshot:review")
+
+        assert mock_tx.call_count == 1  # debounce suppressed second call
+
+
+class TestAwaitingChecks:
+    def test_green_and_mergeable_to_approved(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline", resolved=True)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [
+                     {"name": "ci", "completed": True, "failed": False, "url": ""},
+                 ],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="MERGEABLE"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([item], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[item]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [item])), \
+             patch("slingshot.daemon.gh.pr_comment_create"):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:awaiting-checks", "slingshot:approved",
+        )
+
+    def test_failing_to_implement(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [
+                     {"name": "ci", "completed": True, "failed": True, "url": ""},
+                 ],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="MERGEABLE"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:awaiting-checks", "slingshot:implement",
+        )
+
+    def test_pending_stays(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [
+                     {"name": "ci", "completed": False, "failed": False, "url": ""},
+                 ],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="MERGEABLE"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_not_called()
+
+    def test_unaddressed_items_to_implement(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline")
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([item], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[item]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([item], [], [])), \
+             patch("slingshot.daemon.gh.pr_check_status",
+                   return_value={"sha": "abc", "checks": []}), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="MERGEABLE"):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:awaiting-checks", "slingshot:implement",
+        )
+
+
+class TestBlockedUnblock:
+    def test_unblocks_when_new_items_exist(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline",
+                                created_at="2025-01-03T00:00:00Z")
+        old_issue_comments = [
+            {"body": "<!-- slingshot:agent-error -->",
+             "createdAt": "2025-01-01T00:00:00Z"},
+        ]
+        daemon._daemon_login = lambda: "daemon-bot"
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([item], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[item]), \
+             patch("slingshot.daemon.gh.issue_comments",
+                   return_value=old_issue_comments), \
+             patch("slingshot.daemon.gh.issue_comment_create"):
+            daemon._check_blocked_unblock(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:blocked", "slingshot:implement",
+        )
+
+    def test_no_unblock_when_no_new_items(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        daemon._daemon_login = lambda: "daemon-bot"
+        old_issue_comments = [
+            {"body": "<!-- slingshot:agent-error -->",
+             "createdAt": "2025-01-03T00:00:00Z"},
+        ]
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.gh.issue_comments",
+                   return_value=old_issue_comments), \
+             patch("slingshot.daemon.gh.issue_comment_create"):
+            daemon._check_blocked_unblock(repo, 1, 10)
+
+        mock_tx.assert_not_called()
+
+
+class TestNudge:
+    def test_nudge_posted_on_approved_transition(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        items = [create_test_item(alias="S1", kind="inline")]
+        with patch("slingshot.daemon.gh.pr_comment_create") as mock_comment:
+            daemon._post_nudge(repo.name, 1, 10, items)
+
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        assert "1 thread" in body
+        assert "resolution" in body
+
+    def test_nudge_plural_threads(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        items = [
+            create_test_item(alias="S1", kind="inline"),
+            create_test_item(alias="S2", kind="inline"),
+        ]
+        with patch("slingshot.daemon.gh.pr_comment_create") as mock_comment:
+            daemon._post_nudge(repo.name, 1, 10, items)
+
+        body = mock_comment.call_args[0][2]
+        assert "2 threads" in body
+
+
+class TestAbortLabelMismatch:
+    def test_label_mismatch_aborts_worker(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        ws = WorkerState(repo, {"number": 1, "title": "t", "body": "s"},
+                         "slingshot:implement")
+        ws.proc = None
+
+        with patch("slingshot.daemon.gh.issue_get", return_value={
+            "number": 1, "state": "OPEN",
+            "labels": [{"name": "slingshot:review"}],
+        }), patch.object(daemon, "_abort_worker") as mock_abort:
+            # Make the worker appear alive
+            mock_thread = MagicMock()
+            mock_thread.is_alive.return_value = True
+            ws.thread = mock_thread
+            daemon._workers[ws.key()] = ws
+            daemon._abort_check(repo)
+
+        assert mock_abort.called
+        call_args = mock_abort.call_args[0]
+        assert call_args[1] == "label-mismatch"
+
+    def test_no_abort_when_labels_match(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        ws = WorkerState(repo, {"number": 1, "title": "t", "body": "s"},
+                         "slingshot:review")
+        ws.proc = None
+
+        with patch("slingshot.daemon.gh.issue_get", return_value={
+            "number": 1, "state": "OPEN",
+            "labels": [{"name": "slingshot:reviewing"}],
+        }), patch.object(daemon, "_abort_worker") as mock_abort, \
+           patch("slingshot.daemon.gh.pr_list_by_head",
+                 return_value=[{"number": 10, "state": "OPEN"}]):
+            mock_thread = MagicMock()
+            mock_thread.is_alive.return_value = True
+            ws.thread = mock_thread
+            daemon._workers[ws.key()] = ws
+            daemon._abort_check(repo)
+
+        assert not mock_abort.called
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+
+def create_test_item(**kwargs) -> ReviewItem:
+    alias_val = kwargs.pop("alias", "S1")
+    kind_val = kwargs.pop("kind", "inline")
+    resolved_val = kwargs.pop("resolved", None)
+    created_val = kwargs.pop("created_at", "2025-01-01T00:00:00Z")
+    defaults = {
+        "alias": alias_val,
+        "kind": kind_val,
+        "body": "/slingshot fix this",
+        "author": "test-user",
+        "author_association": "MEMBER",
+        "thread_node_id": "node_abc",
+        "comment_id": "1001",
+        "created_at": created_val,
+        "updated_at": "2025-01-01T00:00:00Z",
+        "url": "https://github.com/o/r/pull/1#discussion_r1",
+    }
+    if resolved_val is not None:
+        defaults["is_resolved"] = resolved_val
+    defaults.update(kwargs)
+    return ReviewItem(**defaults)
