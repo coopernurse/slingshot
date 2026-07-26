@@ -10,6 +10,7 @@ from unittest.mock import patch
 from slingshot.config import Config, RepoConfig
 from slingshot.daemon import (
     Daemon,
+    WorkerState,
     _comment_age,
     _comment_epoch,
     _newest_claim_comment,
@@ -409,6 +410,179 @@ class TestHandleCiFailureTransitions:
         mock_tx.assert_called_once_with(
             repo, 1, "slingshot:approved", "slingshot:blocked",
         )
+class TestCountConsecutiveErrors:
+    ERROR = "<!-- slingshot:agent-error -->\n**Slingshot implement agent failed:** x"
+    CLAIM = "slingshot-claim: daemon-1 slingshot:implementing 2025-01-01T00:00:00Z"
+
+    def _count(self, comments):
+        daemon = Daemon(Config(repos=[_make_repo()]))
+        with patch("slingshot.daemon.gh.issue_comments", return_value=comments):
+            return daemon._count_consecutive_errors("test/repo", 1)
+
+    def test_ignores_claim_comments_between_errors(self):
+        comments = [
+            {"body": self.ERROR, "createdAt": "2025-01-01T00:00:00Z"},
+            {"body": self.CLAIM, "createdAt": "2025-01-01T00:01:00Z"},
+            {"body": self.ERROR, "createdAt": "2025-01-01T00:02:00Z"},
+            {"body": self.CLAIM, "createdAt": "2025-01-01T00:03:00Z"},
+            {"body": self.ERROR, "createdAt": "2025-01-01T00:04:00Z"},
+        ]
+        assert self._count(comments) == 3
+
+    def test_human_comment_breaks_streak(self):
+        comments = [
+            {"body": self.ERROR, "createdAt": "2025-01-01T00:00:00Z"},
+            {"body": "looks good, let me take over",
+             "createdAt": "2025-01-01T00:01:00Z"},
+            {"body": self.ERROR, "createdAt": "2025-01-01T00:02:00Z"},
+        ]
+        assert self._count(comments) == 1
+
+    def test_no_error_comments_returns_zero(self):
+        comments = [
+            {"body": self.CLAIM, "createdAt": "2025-01-01T00:00:00Z"},
+            {"body": "normal comment", "createdAt": "2025-01-01T00:01:00Z"},
+        ]
+        assert self._count(comments) == 0
+
+
+class TestHandleAgentFailureBlocking:
+    def test_repeated_failures_with_interleaved_claims_eventually_block(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo], agent_failure_threshold=3)
+        daemon = Daemon(cfg)
+        ws = WorkerState(repo, {"number": 8, "title": "t", "body": "s"},
+                         "slingshot:implement")
+
+        # Thread state after the third error comment was posted
+        # (issue_comments is re-fetched after posting).
+        comments = [
+            {"body": TestCountConsecutiveErrors.ERROR,
+             "createdAt": "2025-01-01T00:00:00Z"},
+            {"body": TestCountConsecutiveErrors.CLAIM,
+             "createdAt": "2025-01-01T00:01:00Z"},
+            {"body": TestCountConsecutiveErrors.ERROR,
+             "createdAt": "2025-01-01T00:02:00Z"},
+            {"body": TestCountConsecutiveErrors.CLAIM,
+             "createdAt": "2025-01-01T00:03:00Z"},
+            {"body": TestCountConsecutiveErrors.ERROR,
+             "createdAt": "2025-01-01T00:04:00Z"},
+        ]
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.issue_comment_create"), \
+             patch("slingshot.daemon.gh.issue_comments", return_value=comments):
+            daemon._handle_agent_failure(ws, "slingshot:implementing", "empty-diff")
+
+        # The third consecutive error (2 prior + this one) must block.
+        assert mock_tx.call_args_list[-1][0] == (
+            repo, 8, "slingshot:implement", "slingshot:blocked",
+        )
+
+
+class TestDoImplementReworkRouting:
+    def _ws(self, repo):
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        return WorkerState(repo, issue, "slingshot:implement")
+
+    def _success_mocks(self, tmp_path):
+        """Common patches for a successful agent run in tmp_path worktree."""
+        worktree = tmp_path / "wt"
+        return {
+            "worktree": worktree,
+            "has_changes": lambda p: Path(p) != tmp_path,
+        }
+
+    def test_stale_fail_comments_skip_agent_and_advance(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        ws = self._ws(repo)
+
+        stale = {
+            "body": f"{CI_FAIL_MARKER}\n**CI Failure** on `abc1234`",
+            "createdAt": "2025-01-01T00:00:00Z",  # epoch 1735689600
+        }
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.git.remote_branch_exists", return_value=True), \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.gh.pr_comments", return_value=[stale]), \
+             patch("slingshot.daemon.git.branch_last_commit_epoch",
+                   return_value=1735689600 + 3600), \
+             patch("slingshot.daemon.git.create_worktree_from_remote") as m_wt, \
+             patch("slingshot.daemon._run_agent") as m_agent:
+            daemon._do_implement(ws)
+
+        m_wt.assert_not_called()
+        m_agent.assert_not_called()
+        mock_tx.assert_called_once_with(
+            repo, 8, "slingshot:implementing", "slingshot:review",
+        )
+
+    def test_fresh_fail_comment_runs_rework_and_skips_existing_pr_create(
+        self, tmp_path,
+    ):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        ws = self._ws(repo)
+        mocks = self._success_mocks(tmp_path)
+
+        fresh = {
+            "body": f"{CI_FAIL_MARKER}\n**CI Failure** on `abc1234`",
+            "createdAt": "2025-01-01T00:00:00Z",  # epoch 1735689600
+        }
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.git.remote_branch_exists", return_value=True), \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.gh.pr_comments", return_value=[fresh]), \
+             patch("slingshot.daemon.git.branch_last_commit_epoch",
+                   return_value=1735689600 - 3600), \
+             patch("slingshot.daemon.git.create_worktree_from_remote",
+                   return_value=mocks["worktree"]), \
+             patch("slingshot.daemon.git.has_changes",
+                   side_effect=mocks["has_changes"]), \
+             patch("slingshot.daemon._run_agent", return_value=(0, "")), \
+             patch("slingshot.daemon.git.commit_changes"), \
+             patch("slingshot.daemon.git.push_branch"), \
+             patch("slingshot.daemon.gh.pr_create") as m_pr_create:
+            daemon._do_implement(ws)
+
+        m_pr_create.assert_not_called()
+        mock_tx.assert_called_once_with(
+            repo, 8, "slingshot:implementing", "slingshot:review",
+        )
+
+    def test_fresh_scenario_creates_pr_when_none_exists(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        ws = self._ws(repo)
+        mocks = self._success_mocks(tmp_path)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.git.remote_branch_exists",
+                   return_value=False), \
+             patch("slingshot.daemon.gh.pr_list_by_head", return_value=[]), \
+             patch("slingshot.daemon.git.create_worktree",
+                   return_value=mocks["worktree"]), \
+             patch("slingshot.daemon.git.has_changes",
+                   side_effect=mocks["has_changes"]), \
+             patch("slingshot.daemon._run_agent", return_value=(0, "")), \
+             patch("slingshot.daemon.git.commit_changes"), \
+             patch("slingshot.daemon.git.push_branch"), \
+             patch("slingshot.daemon.gh.repo_default_branch",
+                   return_value="main"), \
+             patch("slingshot.daemon.gh.pr_create") as m_pr_create:
+            daemon._do_implement(ws)
+
+        m_pr_create.assert_called_once()
+        mock_tx.assert_called_once_with(
+            repo, 8, "slingshot:implementing", "slingshot:review",
+        )
+
+
 def _ws():
     return SimpleNamespace(proc=None)
 
