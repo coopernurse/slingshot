@@ -419,7 +419,6 @@ class Daemon:
 
         if branch_exists:
             if fail_markers > 0 and pr_num is not None:
-                scenario = "rework"
                 last_push = git.branch_last_commit_epoch(ws.repo.path, branch)
                 comments = gh.pr_comments(ws.repo.name, pr_num)
                 fail_comments: list[str] = []
@@ -432,11 +431,28 @@ class Daemon:
                         if epoch is not None and epoch < last_push:
                             continue
                     fail_comments.append(body)
-                feedback = "\n\n---\n\n".join(fail_comments)
+                if fail_comments:
+                    scenario = "rework"
+                    feedback = "\n\n---\n\n".join(fail_comments)
+                else:
+                    # Every fail comment predates the branch tip, so the
+                    # pushed branch already addresses all known feedback.
+                    # Running the agent would produce a guaranteed empty
+                    # diff; skip straight to the successor state.
+                    scenario = "done"
             else:
                 scenario = "resume"
         else:
             scenario = "fresh"
+
+        if scenario == "done":
+            log.log(
+                f"repo={ws.repo.name} issue={issue_num} "
+                f"event=rework-skip reason=no-fresh-feedback"
+            )
+            successor = state.WORK_TO_SUCCESSOR[ws.phase]
+            self._transition_label(ws.repo, issue_num, ws.flight_label, successor)
+            return 0.0
 
         spec = ws.issue_body or ""
 
@@ -524,14 +540,20 @@ class Daemon:
             self._handle_agent_failure(ws, ws.flight_label, "push-failed")
             return elapsed
 
-        default_branch = self._default_branch_for(ws.repo)
-        pr_title = ws.issue_title or f"Slingshot #{issue_num}"
-        pr_body = f"Closes #{issue_num}\n\nAutomated implementation by slingshot."
         try:
-            gh.pr_create(
-                ws.repo.name, title=pr_title, body=pr_body,
-                head=branch, base=default_branch,
-            )
+            # On rework/resume the PR already exists from a prior cycle;
+            # only create it when no open PR exists for this branch.
+            open_prs = gh.pr_list_by_head(ws.repo.name, branch, state="open")
+            if not open_prs:
+                default_branch = self._default_branch_for(ws.repo)
+                pr_title = ws.issue_title or f"Slingshot #{issue_num}"
+                pr_body = (
+                    f"Closes #{issue_num}\n\nAutomated implementation by slingshot."
+                )
+                gh.pr_create(
+                    ws.repo.name, title=pr_title, body=pr_body,
+                    head=branch, base=default_branch,
+                )
         except subprocess.CalledProcessError:
             self._handle_agent_failure(ws, ws.flight_label, "pr-create-failed")
             return elapsed
@@ -679,6 +701,10 @@ class Daemon:
             body = c.get("body", "")
             if "<!-- slingshot:agent-error -->" in body:
                 count += 1
+            elif body.startswith("slingshot-claim:"):
+                # Claim markers are posted before every attempt; they are
+                # daemon noise and must not reset the failure streak.
+                continue
             else:
                 break
         return count
