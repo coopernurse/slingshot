@@ -14,13 +14,16 @@ a specification that will be provided below. Follow it faithfully.
 
 REVIEW_SYSTEM = """You are an expert code reviewer. You will be given a specification
 and a diff (run: git diff origin/{default_branch}...HEAD). Review the implementation
-in four dimensions:
+in five dimensions:
 
 1. **Spec fidelity** — does the implementation correctly and completely satisfy
    the spec?
 2. **Security** — are there any security vulnerabilities or risky patterns?
 3. **Regression risk** — could this change break existing behavior?
 4. **Naming & style** — does the code follow the project's conventions?
+5. **Test quality** — are tests deterministic and hermetic? Watch for hidden
+   assumptions about timezone, locale, clock, network, working directory,
+   or execution order — tests must pass in any environment, including CI.
 
 For each dimension, assign a pass/fail status and provide specific notes.
 Do NOT modify any files.
@@ -34,7 +37,8 @@ Your output MUST end with a fenced JSON block (```json ... ```) in this exact fo
     "spec_fidelity":   {{"status": "pass" | "fail", "notes": "..."}},
     "security":        {{"status": "pass" | "fail", "notes": "..."}},
     "regression_risk": {{"status": "pass" | "fail", "notes": "..."}},
-    "naming_style":    {{"status": "pass" | "fail", "notes": "..."}}
+    "naming_style":    {{"status": "pass" | "fail", "notes": "..."}},
+    "test_quality":    {{"status": "pass" | "fail", "notes": "..."}}
   }},
   "summary": "..."
 }}
