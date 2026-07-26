@@ -683,7 +683,8 @@ def _rmtree(path):
 
 
 def _write_opencode_config(worktree):
-    """Write a minimal opencode.json so the agent treats the worktree as its workspace."""
+    """Write a minimal opencode.json so the agent treats the worktree as
+       its workspace."""
     config_path = worktree / "opencode.json"
     if not config_path.exists():
         config_path.write_text(json.dumps({
