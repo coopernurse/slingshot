@@ -1,9 +1,7 @@
 ---
-interface:
-  display_name: "Slingshot New"
-  short_description: "File a slingshot specification as a GitHub issue"
-policy:
-  allow_implicit_invocation: false
+name: slingshot-new
+description: File a slingshot specification as a GitHub issue
+disable-model-invocation: true
 ---
 
 ## Skill: slingshot-new
