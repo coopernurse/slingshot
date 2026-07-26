@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import shutil
 import signal
@@ -336,6 +337,8 @@ class Daemon:
         else:
             worktree = git.create_worktree_from_remote(ws.repo.path, issue_num)
 
+        _write_opencode_config(worktree)
+
         main_before = git.has_changes(ws.repo.path)
 
         prompt = prompts.render_implement_prompt(
@@ -384,6 +387,9 @@ class Daemon:
         archive_dir = ws.repo.path / ".slingshot" / "prompts"
         archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_file(prompt_file, archive_dir / prompt_file.name)
+
+        # Remove ephemeral opencode config so it is not committed
+        _rmtree(worktree / "opencode.json")
 
         if exit_code != 0 or not git.has_changes(worktree):
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
@@ -447,6 +453,8 @@ class Daemon:
         if not worktree.exists():
             worktree = git.create_worktree_from_remote(ws.repo.path, issue_num)
 
+        _write_opencode_config(worktree)
+
         default_branch = self._default_branch_for(ws.repo)
         spec = ws.issue_body or ""
 
@@ -498,6 +506,9 @@ class Daemon:
         archive_dir = ws.repo.path / ".slingshot" / "prompts"
         archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_file(prompt_file, archive_dir / prompt_file.name)
+
+        # Remove ephemeral opencode config so it is not committed
+        _rmtree(worktree / "opencode.json")
 
         verdict_data = prompts.parse_verdict(output)
         if exit_code != 0 or verdict_data is None:
@@ -662,6 +673,25 @@ def _write_agent_log(
 
 def _copy_file(src, dst):
     shutil.copy2(src, dst)
+
+
+def _rmtree(path):
+    try:
+        path.unlink(missing_ok=True)
+    except (IsADirectoryError, PermissionError):
+        shutil.rmtree(path, ignore_errors=True)
+
+
+def _write_opencode_config(worktree):
+    """Write a minimal opencode.json so the agent treats the worktree as
+       its workspace."""
+    config_path = worktree / "opencode.json"
+    if not config_path.exists():
+        config_path.write_text(json.dumps({
+            "permission": {
+                "external_directory": "allow",
+            },
+        }, indent=2) + "\n")
 
 
 def _tail(text, n):

@@ -17,8 +17,8 @@ class RepoConfig:
 
 @dataclass
 class AgentConfig:
-    implement_command: str = "opencode run {prompt_file}"
-    review_command: str = "opencode run {prompt_file}"
+    implement_command: str = "opencode run --auto {prompt_file}"
+    review_command: str = "opencode run --auto {prompt_file}"
 
 
 @dataclass
