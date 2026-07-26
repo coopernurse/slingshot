@@ -50,15 +50,15 @@ name = "owner/repo"
 path = "/tmp/test"
 """)
         cfg = load_config(str(config_file))
-        assert cfg.agent.implement_command == "opencode run {prompt_file}"
-        assert cfg.agent.review_command == "opencode run {prompt_file}"
+        assert cfg.agent.implement_command == "opencode run --auto {prompt_file}"
+        assert cfg.agent.review_command == "opencode run --auto {prompt_file}"
 
     def test_missing_file_returns_default_config(self, tmp_path: Path):
         cfg = load_config(str(tmp_path / "nonexistent.toml"))
         assert isinstance(cfg, Config)
         assert cfg.poll_interval_seconds == 60
         assert cfg.repos == []
-        assert cfg.agent.implement_command == "opencode run {prompt_file}"
+        assert cfg.agent.implement_command == "opencode run --auto {prompt_file}"
 
     def test_empty_repos_when_none_configured(self, tmp_path: Path):
         config_file = tmp_path / "config.toml"
