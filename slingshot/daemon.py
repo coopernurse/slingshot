@@ -368,9 +368,9 @@ class Daemon:
             if output:
                 _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
                 tail = _tail(output, 50)
-                log.log(
-                    f"repo={ws.repo.name} issue={issue_num} "
-                    f"event=agent-output tail=\n{tail}"
+                log.log_lines(
+                    f"repo={ws.repo.name} issue={issue_num} event=agent-output",
+                    tail,
                 )
             log.log_agent_failure(
                 ws.repo.name, issue_num, "implement", "agent-escaped-worktree",
@@ -395,9 +395,9 @@ class Daemon:
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
             if output:
                 tail = _tail(output, 50)
-                log.log(
-                    f"repo={ws.repo.name} issue={issue_num} "
-                    f"event=agent-output tail=\n{tail}"
+                log.log_lines(
+                    f"repo={ws.repo.name} issue={issue_num} event=agent-output",
+                    tail,
                 )
             log.log_agent_failure(ws.repo.name, issue_num, "implement", reason)
             self._handle_agent_failure(ws, ws.flight_label, reason)
@@ -487,9 +487,9 @@ class Daemon:
             if output:
                 _write_agent_log(ws.repo.path, issue_num, ws.phase, output)
                 tail = _tail(output, 50)
-                log.log(
-                    f"repo={ws.repo.name} issue={issue_num} "
-                    f"event=agent-output tail=\n{tail}"
+                log.log_lines(
+                    f"repo={ws.repo.name} issue={issue_num} event=agent-output",
+                    tail,
                 )
             log.log_agent_failure(
                 ws.repo.name, issue_num, "review", "agent-escaped-worktree",
@@ -515,9 +515,9 @@ class Daemon:
             reason = f"exit={exit_code}" if exit_code != 0 else "no-verdict"
             if output:
                 tail = _tail(output, 50)
-                log.log(
-                    f"repo={ws.repo.name} issue={issue_num} "
-                    f"event=agent-output tail=\n{tail}"
+                log.log_lines(
+                    f"repo={ws.repo.name} issue={issue_num} event=agent-output",
+                    tail,
                 )
             log.log_agent_failure(ws.repo.name, issue_num, "review", reason)
             self._handle_agent_failure(ws, ws.flight_label, reason)
