@@ -319,7 +319,7 @@ class Daemon:
             repo, issue_num, state.AWAITING_CHECKS, "slingshot:approved",
         )
         if addressed_unresolved:
-            self._post_nudge(repo, issue_num, pr_num, addressed_unresolved)
+            self._post_nudge(repo.name, issue_num, pr_num, addressed_unresolved)
 
     def _check_blocked_unblock(
         self, repo: RepoConfig, issue_num: int, pr_num: int,
@@ -1077,8 +1077,10 @@ class Daemon:
             note = disp.get("note", "")
 
             if item.kind == "inline" and item.comment_id:
+                action_label = {"fixed": "Fixed", "wontfix": "Won't fix",
+                                "unclear": "Unclear"}.get(action, action)
                 reply_body = (
-                    f"Addressed in `{short_sha}`: {note}\n"
+                    f"**{action_label}** in `{short_sha}`: {note}\n"
                     f"{ADDRESSED_MARKER}{item.thread_node_id} -->"
                 )
                 inline_replies.append((item.comment_id, reply_body))
@@ -1136,6 +1138,16 @@ class Daemon:
                 try:
                     gh.pr_review_reply(repo_name, pr_num, item.comment_id,
                                        reply_body)
+                except Exception:
+                    pass
+            elif item.kind == "conversation" and item.conversation_comment_id:
+                reply_body = (
+                    f"<!-- slingshot:disputed "
+                    f"conv:{item.conversation_comment_id} -->\n"
+                    f"**Disputed ({item.alias}):** {note}"
+                )
+                try:
+                    gh.pr_comment_create(repo_name, pr_num, reply_body)
                 except Exception:
                     pass
 

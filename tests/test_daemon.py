@@ -854,6 +854,68 @@ class TestBlockedUnblock:
         mock_tx.assert_not_called()
 
 
+class TestDisputedReplies:
+    def test_disputes_inline_item(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S1", kind="inline",
+                                comment_id="1001", thread_node_id="node1")
+        unsolved = [{"id": "S1", "note": "still broken"}]
+
+        with patch("slingshot.daemon.gh.pr_review_reply") as mock_reply:
+            daemon._post_disputed_replies(repo.name, 1, unsolved, [item])
+
+        mock_reply.assert_called_once_with(
+            repo.name, 1, "1001", mock_reply.call_args[0][3],
+        )
+        body = mock_reply.call_args[0][3]
+        assert "<!-- slingshot:disputed node1 -->" in body
+        assert "still broken" in body
+
+    def test_disputes_conversation_item(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        item = create_test_item(alias="S2", kind="conversation",
+                                conversation_comment_id="2002")
+        unsolved = [{"id": "S2", "note": "not addressed"}]
+
+        with patch("slingshot.daemon.gh.pr_comment_create") as mock_comment:
+            daemon._post_disputed_replies(repo.name, 1, unsolved, [item])
+
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        assert "<!-- slingshot:disputed conv:2002 -->" in body
+        assert "not addressed" in body
+
+    def test_disputes_mixed_items(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        inline_item = create_test_item(alias="S1", kind="inline",
+                                       comment_id="1001", thread_node_id="n1")
+        conv_item = create_test_item(alias="S2", kind="conversation",
+                                     conversation_comment_id="2002")
+        unsolved = [
+            {"id": "S1", "note": "not fixed"},
+            {"id": "S2", "note": "ignored"},
+        ]
+
+        with patch("slingshot.daemon.gh.pr_review_reply") as mock_reply, \
+             patch("slingshot.daemon.gh.pr_comment_create") as mock_comment:
+            daemon._post_disputed_replies(
+                repo.name, 1, unsolved, [inline_item, conv_item],
+            )
+
+        assert mock_reply.call_count == 1
+        assert mock_comment.call_count == 1
+
+
+
 class TestNudge:
     def test_nudge_posted_on_approved_transition(self):
         repo = _make_repo()

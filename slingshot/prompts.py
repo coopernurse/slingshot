@@ -87,6 +87,15 @@ def _format_item_block(item: ReviewItem) -> str:
     if item.diff_hunk:
         lines.append(f"  Diff hunk:\n```diff\n{item.diff_hunk}\n```")
     lines.append(f"  Body:\n> {item.body}")
+    if item.addressed_reply_body:
+        # Strip hidden markers for cleaner prompt rendering
+        clean_reply = item.addressed_reply_body
+        for marker in ("<!-- slingshot:addressed", "<!-- slingshot:disputed"):
+            idx = clean_reply.find(marker)
+            if idx != -1:
+                clean_reply = clean_reply[:idx].strip()
+        if clean_reply:
+            lines.append(f"  Implementer's reply:\n> {clean_reply}")
     lines.append(f"  URL: {item.url}")
     return "\n".join(lines) + "\n"
 

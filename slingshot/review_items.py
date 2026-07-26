@@ -6,6 +6,7 @@ import json
 from dataclasses import dataclass
 
 from slingshot import gh
+from slingshot import logging as log
 
 ADDRESSED_MARKER = "<!-- slingshot:addressed "
 DISPUTED_MARKER = "<!-- slingshot:disputed "
@@ -43,6 +44,9 @@ class ReviewItem:
     addressed_epoch: int = 0
     disputed_epoch: int = 0
 
+    # Body of the most recent addressed reply from the daemon
+    addressed_reply_body: str = ""
+
     def is_qualifying(self, daemon_login: str) -> bool:
         return (
             self.body.strip().startswith("/slingshot")
@@ -74,20 +78,25 @@ def _parse_iso_epoch(s: str) -> int:
     return 0
 
 
-def _reply_markers(replies: list[dict], thread_node_id: str) -> tuple[int, int]:
-    """Return (addressed_epoch, disputed_epoch) from reply comments."""
+def _reply_markers(replies: list[dict],
+                   thread_node_id: str) -> tuple[int, int, str, str]:
+    """Return (addressed_epoch, disputed_epoch, addressed_body, disputed_body)."""
     addr = 0
     disp = 0
+    addr_body = ""
+    disp_body = ""
     for reply in replies:
         body = reply.get("body", "")
         epoch = _parse_iso_epoch(reply.get("created_at", ""))
         if ADDRESSED_MARKER in body and thread_node_id in body:
             if epoch > addr:
                 addr = epoch
+                addr_body = body
         if DISPUTED_MARKER in body and thread_node_id in body:
             if epoch > disp:
                 disp = epoch
-    return addr, disp
+                disp_body = body
+    return addr, disp, addr_body, disp_body
 
 
 def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewItem]]:
@@ -115,7 +124,13 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
             if key not in rest_by_key:
                 rest_by_key[key] = rc
 
-    threads = gh.pr_review_threads(repo, pr_num)
+    threads, thread_total = gh.pr_review_threads(repo, pr_num)
+    if thread_total >= 100:
+        log.log(
+            f"repo={repo} pr={pr_num} "
+            f"event=review-threads-truncated "
+            f"total_threads={thread_total}"
+        )
 
     for thread in threads:
         tpath = thread.get("path", "") or ""
@@ -139,12 +154,17 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
         alias = _next_alias()
         url = f"https://github.com/{repo}/pull/{pr_num}#discussion_r{thread_node_id}"
 
-        addr_epoch, disp_epoch = _reply_markers(comments[1:], thread_node_id)
+        addr_epoch, disp_epoch, addr_body, _ = _reply_markers(
+            comments[1:], thread_node_id,
+        )
         # Also check for markers in REST replies (daemon replies via REST)
         all_replies = rest_comments_replies(rest_comments, comment_id)
-        rest_addr, rest_disp = _reply_markers(all_replies, thread_node_id)
+        rest_addr, rest_disp, rest_addr_body, _ = _reply_markers(
+            all_replies, thread_node_id,
+        )
         if rest_addr > addr_epoch:
             addr_epoch = rest_addr
+            addr_body = rest_addr_body
         if rest_disp > disp_epoch:
             disp_epoch = rest_disp
 
@@ -167,6 +187,7 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
             is_resolved=is_resolved,
             addressed_epoch=addr_epoch,
             disputed_epoch=disp_epoch,
+            addressed_reply_body=addr_body,
         )
         all_items.append(item)
 
@@ -207,6 +228,7 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
             if ADDRESSED_MARKER in body and marker_str in body:
                 if epoch > conv_item.addressed_epoch:
                     conv_item.addressed_epoch = epoch
+                    conv_item.addressed_reply_body = body
             if DISPUTED_MARKER in body and marker_str in body:
                 if epoch > conv_item.disputed_epoch:
                     conv_item.disputed_epoch = epoch

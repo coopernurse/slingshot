@@ -284,7 +284,7 @@ class TestFetchItems:
             "html_url": "https://github.com/o/r/pull/1#discussion_r1001",
         }]
         with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=thread_data), \
+                   return_value=(thread_data, 1)), \
              patch("slingshot.review_items.gh.pr_review_comments",
                    return_value=rest_review), \
              patch("slingshot.review_items.gh.pr_comments", return_value=[]):
@@ -307,7 +307,7 @@ class TestFetchItems:
             "html_url": "https://github.com/o/r/pull/1#issuecomment-2001",
         }]
         with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=[]), \
+                   return_value=([], 0)), \
              patch("slingshot.review_items.gh.pr_review_comments",
                    return_value=[]), \
              patch("slingshot.review_items.gh.pr_comments",
@@ -339,7 +339,7 @@ class TestFetchItems:
             },
         ]
         with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=[]), \
+                   return_value=([], 0)), \
              patch("slingshot.review_items.gh.pr_review_comments",
                    return_value=[]), \
              patch("slingshot.review_items.gh.pr_comments",
@@ -347,3 +347,30 @@ class TestFetchItems:
             all_items, conv_items = fetch_items("o/r", 1)
             assert len(all_items) == 1
             assert all_items[0].addressed_epoch > 0
+
+
+class TestTruncationWarning:
+    def test_warning_logged_when_thread_count_reaches_100(self):
+        with patch("slingshot.review_items.gh.pr_review_threads",
+                   return_value=([], 100)), \
+             patch("slingshot.review_items.gh.pr_review_comments",
+                   return_value=[]), \
+             patch("slingshot.review_items.gh.pr_comments",
+                   return_value=[]), \
+             patch("slingshot.review_items.log.log") as mock_log:
+            fetch_items("o/r", 1)
+        mock_log.assert_called_once()
+        log_msg = mock_log.call_args[0][0]
+        assert "review-threads-truncated" in log_msg
+        assert "total_threads=100" in log_msg
+
+    def test_no_warning_when_thread_count_below_100(self):
+        with patch("slingshot.review_items.gh.pr_review_threads",
+                   return_value=([], 5)), \
+             patch("slingshot.review_items.gh.pr_review_comments",
+                   return_value=[]), \
+             patch("slingshot.review_items.gh.pr_comments",
+                   return_value=[]), \
+             patch("slingshot.review_items.log.log") as mock_log:
+            fetch_items("o/r", 1)
+        mock_log.assert_not_called()

@@ -290,6 +290,26 @@ class TestReviewPromptWithItems:
         assert '"human_items"' in result
         assert '"unsolved"' in result
 
+    def test_addressed_reply_body_in_section(self):
+        items = [
+            ReviewItem(
+                alias="S1", kind="inline", author="user",
+                body="/slingshot fix", path="src/bar.py", line=10,
+                url="https://github.com/o/r/pull/1",
+                addressed_reply_body=(
+                    "**Fixed** in `abc1234`: changed the null check\n"
+                    "<!-- slingshot:addressed node1 -->"
+                ),
+            ),
+        ]
+        result = prompts.render_review_prompt(
+            "spec", "main", addressed_unresolved=items,
+        )
+        assert "Implementer's reply" in result
+        assert "changed the null check" in result
+        # Hidden markers should be stripped from rendering
+        assert "slingshot:addressed" not in result.split("Implementer's reply")[1]
+
 
 class TestComputeEffectiveVerdictWithHumanItems:
     def test_human_items_fail_defeats_pass(self):

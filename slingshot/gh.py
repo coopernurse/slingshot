@@ -229,6 +229,7 @@ query($owner: String!, $name: String!, $number: Int!) {
   repository(owner: $owner, name: $name) {
     pullRequest(number: $number) {
       reviewThreads(first: 100) {
+        totalCount
         nodes {
           id
           isResolved
@@ -254,12 +255,13 @@ query($owner: String!, $name: String!, $number: Int!) {
 """
 
 
-def pr_review_threads(repo: str, pr_num: int) -> list[dict]:
+def pr_review_threads(repo: str, pr_num: int) -> tuple[list[dict], int]:
     """Return review threads for a PR via GraphQL.
 
-    Returns a list of thread dicts with keys: id, isResolved, isOutdated,
-    path, line, originalLine, diffHunk, comments (list of comment dicts).
-    Each comment has: body, author, authorAssociation, createdAt, updatedAt.
+    Returns (threads, total_count).  *threads* is a list of thread dicts
+    with keys: id, isResolved, isOutdated, path, line, originalLine,
+    diffHunk, comments (list of comment dicts).  Each comment has: body,
+    author, authorAssociation, createdAt, updatedAt.
     """
     owner, _, name = repo.partition("/")
     data = graphql(_REVIEW_THREADS_QUERY, {
@@ -268,10 +270,11 @@ def pr_review_threads(repo: str, pr_num: int) -> list[dict]:
         "number": pr_num,
     })
     if not data:
-        return []
+        return [], 0
     repo_node = data.get("repository", {}) or {}
     pr_node = repo_node.get("pullRequest", {}) or {}
     threads = pr_node.get("reviewThreads", {}) or {}
+    total_count = threads.get("totalCount", 0)
     nodes = threads.get("nodes", []) or []
     result: list[dict] = []
     for thread in nodes:
@@ -299,7 +302,7 @@ def pr_review_threads(repo: str, pr_num: int) -> list[dict]:
             "diffHunk": thread.get("diffHunk", ""),
             "comments": comments,
         })
-    return result
+    return result, total_count
 
 
 def pr_review_reply(repo: str, pr_num: int, comment_id: str, body: str) -> dict | None:
