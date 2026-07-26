@@ -197,17 +197,18 @@ class Daemon:
             except subprocess.TimeoutExpired:
                 ws.proc.kill()
                 ws.proc.wait()
-        try:
-            issue = gh.issue_get(ws.repo.name, ws.issue_num)
-            if issue:
-                sl_labels = [lb["name"] for lb in issue.get("labels", [])
-                             if lb["name"].startswith(state.SLINGSHOT_LABEL_PREFIX)]
-                if sl_labels:
-                    gh.issue_edit_labels(
-                        ws.repo.name, ws.issue_num, remove_labels=sl_labels,
-                    )
-        except Exception:
-            pass
+        if reason != "label-mismatch":
+            try:
+                issue = gh.issue_get(ws.repo.name, ws.issue_num)
+                if issue:
+                    sl_labels = [lb["name"] for lb in issue.get("labels", [])
+                                 if lb["name"].startswith(state.SLINGSHOT_LABEL_PREFIX)]
+                    if sl_labels:
+                        gh.issue_edit_labels(
+                            ws.repo.name, ws.issue_num, remove_labels=sl_labels,
+                        )
+            except Exception:
+                pass
         git.worktree_remove(ws.repo.path, ws.issue_num)
         with self._lock:
             self._workers.pop(ws.key(), None)
@@ -296,9 +297,18 @@ class Daemon:
         unaddressed, addressed_unresolved, _ = review_items.partition(qualified)
 
         if unaddressed:
-            self._transition_label(
-                repo, issue_num, state.AWAITING_CHECKS, "slingshot:implement",
-            )
+            debounce_key = f"{repo.name}/{issue_num}"
+            if time.time() >= self._debounce.get(debounce_key, 0):
+                debounce_secs = self.config.comment_debounce_seconds
+                self._debounce[debounce_key] = time.time() + debounce_secs
+                log.log(
+                    f"repo={repo.name} issue={issue_num} "
+                    f"event=items-bounce from={state.AWAITING_CHECKS} "
+                    f"count={len(unaddressed)} debounce={debounce_secs}s"
+                )
+                self._transition_label(
+                    repo, issue_num, state.AWAITING_CHECKS, "slingshot:implement",
+                )
             return
 
         checks = checks_status.get("checks", [])
@@ -619,8 +629,8 @@ class Daemon:
                 qualified = review_items.qualifying(
                     all_items, self._daemon_login(),
                 )
-                unaddressed, _, _ = review_items.partition(qualified)
-                implement_items = unaddressed
+                unaddressed, addressed_unresolved, _ = review_items.partition(qualified)
+                implement_items = unaddressed + addressed_unresolved
             except Exception:
                 pass
             try:
@@ -946,13 +956,6 @@ class Daemon:
         if effective == "pass":
             summary = prompts.format_pass_summary(verdict_data)
             gh.pr_comment_create(ws.repo.name, pr_num, summary)
-
-            # Post disputed markers for unsolved human items
-            human_items = verdict_data.get("human_items")
-            if isinstance(human_items, dict) and human_items.get("status") == "fail":
-                unsolved = human_items.get("unsolved", [])
-                self._post_disputed_replies(ws.repo.name, pr_num, unsolved,
-                                           all_items)
 
             # Check pass-gate again: unaddressed items may have appeared
             # while review was running
