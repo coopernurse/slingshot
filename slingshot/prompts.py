@@ -51,6 +51,41 @@ The overall verdict must be "pass" only if ALL sections pass.  Any section
 failure means the overall verdict is "fail"."""
 
 
+SYNTHESIS_SYSTEM = """You are an expert code reviewer serving as a synthesis /
+tie-breaking agent.
+You will be given a specification, a diff, and the raw outputs from N
+independent review agents. Your job is to synthesize their findings into a
+single unified verdict.
+
+- If all N models agree on the verdict, rubber-stamp the consensus.
+- If there is dissent, act as the **tiebreaker**: produce a final verdict,
+  explain the minority position in the "dissent" field, and report the
+  vote counts in the "voters" field. Every model gets equal weight (one
+  vote).
+
+Your output MUST end with a fenced JSON block (```json ... ```) in this
+exact format:
+
+```json
+{{
+  "verdict": "pass" | "fail",
+  "voters": {{"pass": 2, "fail": 1}},
+  "sections": {{
+    "spec_fidelity":   {{"status": "pass" | "fail", "notes": "..."}},
+    "security":        {{"status": "pass" | "fail", "notes": "..."}},
+    "regression_risk": {{"status": "pass" | "fail", "notes": "..."}},
+    "naming_style":    {{"status": "pass" | "fail", "notes": "..."}},
+    "test_quality":    {{"status": "pass" | "fail", "notes": "..."}}
+  }},
+  "dissent": "Model 2 flagged regression_risk: <specific concern about...>",
+  "summary": "..."
+}}
+```
+
+The overall verdict must be "pass" only if ALL sections pass. Any section
+failure means the overall verdict is "fail"."""
+
+
 def render_implement_prompt(
     spec: str,
     scenario: str,
@@ -147,6 +182,49 @@ def render_review_prompt(spec: str, default_branch: str,
     return "\n".join(parts)
 
 
+def render_synthesis_prompt(
+    spec: str, default_branch: str, review_outputs: list[str],
+    worktree_path: str | None = None,
+) -> str:
+    system = SYNTHESIS_SYSTEM
+    parts = [
+        system, "",
+        "## Instructions",
+        "",
+        f"1. Run `git diff origin/{default_branch}...HEAD` to see the full diff.",
+        "2. Below are the raw outputs from N independent review agents.",
+        "3. Synthesize their findings into a single unified verdict.",
+        "4. If all N agree, rubber-stamp the consensus.",
+        "5. If there is dissent, act as tiebreaker — produce a final verdict,",
+        "   explain the minority position in the \"dissent\" field, and report",
+        "   vote counts in \"voters\".",
+        "6. End your output with the JSON verdict block as described above.",
+        "",
+    ]
+
+    if worktree_path:
+        parts.extend([
+            "## Working directory",
+            "",
+            f"You are working in a git worktree at `{worktree_path}`. Do NOT "
+            "run git commands against any other checkout of this repository.",
+            "",
+        ])
+
+    parts.append("## Specification")
+    parts.append("")
+    parts.append(spec)
+    parts.append("")
+
+    for i, output in enumerate(review_outputs, 1):
+        parts.append(f"## Review Agent {i} Output")
+        parts.append("")
+        parts.append(output)
+        parts.append("")
+
+    return "\n".join(parts)
+
+
 def parse_verdict(output: str) -> dict | None:
     """Extract and parse the last fenced JSON block from agent output.
 
@@ -198,15 +276,24 @@ def compute_effective_verdict(verdict_data: dict) -> str:
     return "pass"
 
 
-def format_pass_summary(verdict_data: dict) -> str:
+def format_pass_summary(verdict_data: dict, voters: dict | None = None,
+                       dissent: str | None = None) -> str:
     """Format a review-pass summary comment."""
     sections = verdict_data.get("sections", {})
-    lines = ["## Slingshot Review: PASSED", ""]
+    header = "## Slingshot Review: PASSED"
+    if voters:
+        pass_votes = voters.get("pass", 0)
+        fail_votes = voters.get("fail", 0)
+        total = pass_votes + fail_votes
+        if total > 0:
+            header = f"## Slingshot Review: PASSED ({pass_votes}/{total})"
+    lines = [header, ""]
     for label, display in [
         ("spec_fidelity", "Spec Fidelity"),
         ("security", "Security"),
         ("regression_risk", "Regression Risk"),
         ("naming_style", "Naming & Style"),
+        ("test_quality", "Test Quality"),
     ]:
         sec = sections.get(label, {})
         lines.append(f"**{display}:** {sec.get('status', '?')}")
@@ -214,18 +301,30 @@ def format_pass_summary(verdict_data: dict) -> str:
         if notes:
             lines.append(f"> {notes}")
         lines.append("")
+    if dissent:
+        lines.append("### Dissent")
+        lines.append(dissent)
+        lines.append("")
     summary = verdict_data.get("summary", "")
     if summary:
         lines.append(summary)
     return "\n".join(lines)
 
 
-def format_fail_summary(verdict_data: dict) -> str:
+def format_fail_summary(verdict_data: dict, voters: dict | None = None,
+                       dissent: str | None = None) -> str:
     """Format a review-fail summary comment with hidden marker."""
     sections = verdict_data.get("sections", {})
+    header = "## Slingshot Review: FAILED"
+    if voters:
+        pass_votes = voters.get("pass", 0)
+        fail_votes = voters.get("fail", 0)
+        total = pass_votes + fail_votes
+        if total > 0:
+            header = f"## Slingshot Review: FAILED ({pass_votes}/{total})"
     lines = [
         REVIEW_FAIL_MARKER,
-        "## Slingshot Review: FAILED",
+        header,
         "",
     ]
     for label, display in [
@@ -233,6 +332,7 @@ def format_fail_summary(verdict_data: dict) -> str:
         ("security", "Security"),
         ("regression_risk", "Regression Risk"),
         ("naming_style", "Naming & Style"),
+        ("test_quality", "Test Quality"),
     ]:
         sec = sections.get(label, {})
         status = sec.get("status", "?")
@@ -241,6 +341,10 @@ def format_fail_summary(verdict_data: dict) -> str:
         notes = sec.get("notes", "")
         if notes:
             lines.append(f"> {notes}")
+        lines.append("")
+    if dissent:
+        lines.append("### Dissent")
+        lines.append(dissent)
         lines.append("")
     summary = verdict_data.get("summary", "")
     if summary:

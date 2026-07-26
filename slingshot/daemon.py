@@ -14,7 +14,9 @@ import sys
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import UTC, datetime
+from pathlib import Path
 
 from slingshot import gh, prompts, state
 from slingshot import git_utils as git
@@ -30,7 +32,7 @@ class WorkerState:
     __slots__ = (
         "repo", "issue_num", "issue_title", "issue_body",
         "phase", "thread", "start_time",
-        "proc", "aborted",
+        "proc", "aborted", "_review_procs",
     )
 
     def __init__(
@@ -45,6 +47,7 @@ class WorkerState:
         self.start_time: float = 0.0
         self.proc: subprocess.Popen | None = None
         self.aborted = False
+        self._review_procs: list[subprocess.Popen] = []
 
     def key(self) -> str:
         return f"{self.repo.name}/{self.issue_num}/{self.phase}"
@@ -183,6 +186,15 @@ class Daemon:
             except subprocess.TimeoutExpired:
                 ws.proc.kill()
                 ws.proc.wait()
+        for p in ws._review_procs:
+            if p.poll() is None:
+                p.terminate()
+                try:
+                    p.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    p.kill()
+                    p.wait()
+        ws._review_procs.clear()
         try:
             issue = gh.issue_get(ws.repo.name, ws.issue_num)
             if issue:
@@ -593,10 +605,32 @@ class Daemon:
         prompt_file = prompt_dir / f"{issue_num}-review.md"
         prompt_file.write_text(prompt)
 
+        review_commands = self.config.agent.review_commands
+        if len(review_commands) == 1:
+            return self._do_review_single(
+                ws, review_commands[0], pr_num, worktree, prompt_file,
+                default_branch, main_before, spec,
+            )
+        else:
+            return self._do_review_multi(
+                ws, review_commands, pr_num, worktree, prompt_file,
+                default_branch, main_before, spec,
+            )
+
+    # ------------------------------------------------------------------
+    # Single-model review (N=1)
+    # ------------------------------------------------------------------
+
+    def _do_review_single(
+        self, ws: WorkerState, command: str, pr_num: int,
+        worktree: Path, prompt_file: Path, default_branch: str,
+        main_before: bool, spec: str,
+    ) -> float:
+        issue_num = ws.issue_num
         timeout = self.config.agent_timeout_minutes * 60
         start = time.time()
         exit_code, output = _run_agent(
-            self.config.agent.review_command,
+            command,
             str(prompt_file),
             cwd=str(worktree),
             timeout=timeout,
@@ -653,6 +687,239 @@ class Daemon:
             self._transition_label(ws.repo, issue_num, ws.flight_label, successor)
         else:
             summary = prompts.format_fail_summary(verdict_data)
+            gh.pr_comment_create(ws.repo.name, pr_num, summary)
+
+            comments = gh.pr_comments(ws.repo.name, pr_num)
+            fail_count = sum(
+                1 for c in comments
+                if REVIEW_FAIL_MARKER in c.get("body", "")
+            )
+            if fail_count >= self.config.review_fail_threshold:
+                self._transition_label(ws.repo, issue_num, ws.flight_label,
+                                       "slingshot:blocked")
+            else:
+                self._transition_label(ws.repo, issue_num, ws.flight_label,
+                                       "slingshot:implement")
+
+        return elapsed
+
+    # ------------------------------------------------------------------
+    # Multi-model review (N>1)
+    # ------------------------------------------------------------------
+
+    def _do_review_multi(
+        self, ws: WorkerState, review_commands: list[str], pr_num: int,
+        worktree: Path, prompt_file: Path, default_branch: str,
+        main_before: bool, spec: str,
+    ) -> float:
+        issue_num = ws.issue_num
+        timeout = self.config.agent_timeout_minutes * 60
+        prompt_dir = worktree / ".slingshot" / "prompts"
+
+        all_procs: list[subprocess.Popen] = []
+        procs_lock = threading.Lock()
+        failed = threading.Event()
+
+        def _run_one(cmd: str, cwd: str) -> tuple[int, str]:
+            try:
+                parts = shlex.split(cmd)
+            except ValueError:
+                parts = cmd.split()
+            cmd_list = [str(prompt_file) if p == "{prompt_file}" else p
+                        for p in parts]
+            env = os.environ.copy()
+            env["OPENCODE_CONFIG_CONTENT"] = _OPENCODE_CONFIG_CONTENT
+            try:
+                proc = subprocess.Popen(
+                    cmd_list, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, cwd=cwd, env=env,
+                )
+            except FileNotFoundError:
+                return -2, "agent command not found"
+
+            with procs_lock:
+                all_procs.append(proc)
+
+            try:
+                deadline = time.time() + timeout
+                while True:
+                    if failed.is_set() or ws.aborted:
+                        proc.kill()
+                        proc.wait()
+                        return -1, "killed"
+                    remaining = deadline - time.time()
+                    if remaining <= 0:
+                        proc.kill()
+                        proc.wait()
+                        return -1, "agent timed out"
+                    try:
+                        out, err = proc.communicate(
+                            timeout=min(remaining, _TIMEOUT_CHECK_SECONDS),
+                        )
+                        return proc.returncode, (out or "") + (err or "")
+                    except subprocess.TimeoutExpired:
+                        continue
+            finally:
+                with procs_lock:
+                    if proc in all_procs:
+                        all_procs.remove(proc)
+                if proc.poll() is None:
+                    proc.kill()
+                    proc.wait()
+
+        ws._review_procs = all_procs
+
+        start = time.time()
+        results: list[tuple[int, str, dict]] = []
+
+        with ThreadPoolExecutor(max_workers=len(review_commands)) as executor:
+            future_to_idx = {}
+            for i, cmd in enumerate(review_commands):
+                future = executor.submit(_run_one, cmd, str(worktree))
+                future_to_idx[future] = i
+
+            for future in as_completed(future_to_idx):
+                i = future_to_idx[future]
+                exit_code, output = future.result()
+
+                if failed.is_set():
+                    continue
+
+                if exit_code != 0 or ws.aborted:
+                    failed.set()
+                    with procs_lock:
+                        for p in list(all_procs):
+                            if p.poll() is None:
+                                p.kill()
+                                p.wait()
+                    continue
+
+                verdict_data = prompts.parse_verdict(output)
+                if verdict_data is None:
+                    failed.set()
+                    with procs_lock:
+                        for p in list(all_procs):
+                            if p.poll() is None:
+                                p.kill()
+                                p.wait()
+                    continue
+
+                results.append((i, output, verdict_data))
+
+        ws._review_procs = []
+        elapsed = time.time() - start
+
+        if ws.aborted:
+            return elapsed
+
+        main_escaped = git.has_changes(ws.repo.path) and not main_before
+        if main_escaped:
+            for i, output, _ in sorted(results, key=lambda x: x[0]):
+                _write_agent_log(ws.repo.path, issue_num,
+                                 f"review-{i + 1}", output)
+            log.log_agent_failure(
+                ws.repo.name, issue_num, "review", "agent-escaped-worktree",
+            )
+            self._handle_agent_failure(
+                ws, ws.flight_label, "agent-escaped-worktree",
+            )
+            return elapsed
+
+        for i, output, _ in sorted(results, key=lambda x: x[0]):
+            _write_agent_log(ws.repo.path, issue_num,
+                             f"review-{i + 1}", output)
+            out_file = prompt_dir / f"{issue_num}-review-{i + 1}.md"
+            out_file.write_text(output)
+
+        # Archive prompt file and individual outputs to main repo
+        archive_dir = ws.repo.path / ".slingshot" / "prompts"
+        archive_dir.mkdir(parents=True, exist_ok=True)
+        _copy_file(prompt_file, archive_dir / prompt_file.name)
+        for i, _output, _ in sorted(results, key=lambda x: x[0]):
+            out_file = prompt_dir / f"{issue_num}-review-{i + 1}.md"
+            _copy_file(out_file, archive_dir / out_file.name)
+
+        if failed.is_set():
+            exit_code = -1
+            for f in future_to_idx:
+                if f.done():
+                    ec, _ = f.result()
+                    if ec != 0:
+                        exit_code = ec
+                        break
+            reason = f"exit={exit_code}" if exit_code != 0 else "no-verdict"
+            for _i, output, _ in sorted(results, key=lambda x: x[0]):
+                if output:
+                    tail = _tail(output, 50)
+                    log.log(
+                        f"repo={ws.repo.name} issue={issue_num} "
+                        f"event=agent-output tail=\n{tail}"
+                    )
+            log.log_agent_failure(ws.repo.name, issue_num, "review", reason)
+            self._handle_agent_failure(ws, ws.flight_label, reason)
+            return elapsed
+
+        # Run synthesis agent
+        review_outputs = [output for _, output, _
+                          in sorted(results, key=lambda x: x[0])]
+        synthesis_prompt = prompts.render_synthesis_prompt(
+            spec, default_branch, review_outputs,
+            worktree_path=str(worktree),
+        )
+        synth_file = prompt_dir / f"{issue_num}-review-synthesis.md"
+        synth_file.write_text(synthesis_prompt)
+
+        synth_exit_code, synth_output = _run_agent(
+            review_commands[0],
+            str(synth_file),
+            cwd=str(worktree),
+            timeout=timeout,
+            ws=ws,
+        )
+
+        if ws.aborted:
+            _copy_file(synth_file, archive_dir / synth_file.name)
+            return elapsed
+
+        # Archive synthesis prompt
+        _copy_file(synth_file, archive_dir / synth_file.name)
+
+        if synth_output:
+            _write_agent_log(ws.repo.path, issue_num,
+                             "review-synthesis", synth_output)
+
+        verdict_data = prompts.parse_verdict(synth_output)
+        if synth_exit_code != 0 or verdict_data is None:
+            reason = (
+                f"synthesis-exit={synth_exit_code}"
+                if synth_exit_code != 0
+                else "no-synthesis-verdict"
+            )
+            if synth_output:
+                tail = _tail(synth_output, 50)
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=agent-output tail=\n{tail}"
+                )
+            log.log_agent_failure(ws.repo.name, issue_num, "review", reason)
+            self._handle_agent_failure(ws, ws.flight_label, reason)
+            return elapsed
+
+        effective = prompts.compute_effective_verdict(verdict_data)
+        voters = verdict_data.get("voters")
+        dissent = verdict_data.get("dissent")
+
+        if effective == "pass":
+            summary = prompts.format_pass_summary(
+                verdict_data, voters=voters, dissent=dissent,
+            )
+            gh.pr_comment_create(ws.repo.name, pr_num, summary)
+            successor = state.WORK_TO_SUCCESSOR[ws.phase]
+            self._transition_label(ws.repo, issue_num, ws.flight_label, successor)
+        else:
+            summary = prompts.format_fail_summary(
+                verdict_data, voters=voters, dissent=dissent,
+            )
             gh.pr_comment_create(ws.repo.name, pr_num, summary)
 
             comments = gh.pr_comments(ws.repo.name, pr_num)

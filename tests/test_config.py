@@ -14,7 +14,7 @@ claim_timeout_minutes = 45
 
 [agent]
 implement_command = "echo {prompt_file}"
-review_command = "echo {prompt_file}"
+review_commands = ["echo {prompt_file}"]
 
 [[repo]]
 name = "owner/repo"
@@ -51,7 +51,7 @@ path = "/tmp/test"
 """)
         cfg = load_config(str(config_file))
         assert cfg.agent.implement_command == "opencode run --auto {prompt_file}"
-        assert cfg.agent.review_command == "opencode run --auto {prompt_file}"
+        assert cfg.agent.review_commands == ["opencode run --auto {prompt_file}"]
 
     def test_missing_file_returns_default_config(self, tmp_path: Path):
         cfg = load_config(str(tmp_path / "nonexistent.toml"))
@@ -98,3 +98,40 @@ path = "/tmp/c"
         assert found is not None
         assert found.name == "a/b"
         assert cfg.repo_by_name("nonexistent") is None
+
+    def test_review_commands_multiple(self, tmp_path: Path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""\
+[agent]
+review_commands = [
+    "cmd1 {prompt_file}",
+    "cmd2 {prompt_file}",
+]
+
+[[repo]]
+name = "owner/repo"
+path = "/tmp/test"
+""")
+        cfg = load_config(str(config_file))
+        assert cfg.agent.review_commands == [
+            "cmd1 {prompt_file}",
+            "cmd2 {prompt_file}",
+        ]
+
+    def test_review_commands_single_string_parsed_as_list(self, tmp_path: Path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""\
+[agent]
+review_commands = "single_cmd {prompt_file}"
+
+[[repo]]
+name = "owner/repo"
+path = "/tmp/test"
+""")
+        cfg = load_config(str(config_file))
+        assert cfg.agent.review_commands == ["single_cmd {prompt_file}"]
+
+    def test_review_commands_default_is_list(self):
+        cfg = Config()
+        assert isinstance(cfg.agent.review_commands, list)
+        assert cfg.agent.review_commands == ["opencode run --auto {prompt_file}"]

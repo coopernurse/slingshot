@@ -18,7 +18,9 @@ class RepoConfig:
 @dataclass
 class AgentConfig:
     implement_command: str = "opencode run --auto {prompt_file}"
-    review_command: str = "opencode run --auto {prompt_file}"
+    review_commands: list[str] = field(
+        default_factory=lambda: ["opencode run --auto {prompt_file}"],
+    )
 
 
 @dataclass
@@ -66,8 +68,12 @@ def load_config(path: str | None = None) -> Config:
         agent_raw = raw["agent"]
         if "implement_command" in agent_raw:
             cfg.agent.implement_command = str(agent_raw["implement_command"])
-        if "review_command" in agent_raw:
-            cfg.agent.review_command = str(agent_raw["review_command"])
+        if "review_commands" in agent_raw:
+            raw_cmds = agent_raw["review_commands"]
+            if isinstance(raw_cmds, list):
+                cfg.agent.review_commands = [str(c) for c in raw_cmds]
+            elif isinstance(raw_cmds, str):
+                cfg.agent.review_commands = [str(raw_cmds)]
 
     if "repo" in raw and isinstance(raw["repo"], list):
         for entry in raw["repo"]:
