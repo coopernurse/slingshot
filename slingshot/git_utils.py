@@ -111,9 +111,16 @@ def create_worktree_from_remote(checkout: Path, issue_num: int) -> Path:
     wt_path.parent.mkdir(parents=True, exist_ok=True)
 
     worktree_remove(checkout, issue_num)
+    # Remove stale local branch from a previous run; the remote branch
+    # is the source of truth.  Without this, `worktree add -b` fails
+    # with "branch already exists".
+    _delete_branch_if_exists(checkout, branch)
+    # Create a local branch tracking the remote one.  Passing
+    # `origin/<branch>` alone would leave the worktree on a detached
+    # HEAD, and `push_branch` would have no branch name to push.
     _run([
         "git", "worktree", "add", str(wt_path),
-        f"origin/{branch}",
+        "--track", "-b", branch, f"origin/{branch}",
     ], cwd=checkout, capture=False)
     return wt_path
 
