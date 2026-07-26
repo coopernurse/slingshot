@@ -19,6 +19,7 @@ from slingshot import gh, prompts, state
 from slingshot import git_utils as git
 from slingshot import logging as log
 from slingshot.config import Config, RepoConfig
+from slingshot.prompts import CI_FAIL_MARKER, REVIEW_FAIL_MARKER
 
 # ---------------------------------------------------------------------------
 # Worker status tracking
@@ -115,6 +116,8 @@ class Daemon:
             self._reap(repo)
             self._abort_check(repo)
         for repo in self.config.repos:
+            self._ci_check(repo)
+        for repo in self.config.repos:
             self._claim_work(repo)
 
         for repo in self.config.repos:
@@ -193,6 +196,112 @@ class Daemon:
         git.worktree_remove(ws.repo.path, ws.issue_num)
         with self._lock:
             self._workers.pop(ws.key(), None)
+
+    # ------------------------------------------------------------------
+    # CI check
+    # ------------------------------------------------------------------
+
+    def _ci_check(self, repo: RepoConfig) -> None:
+        try:
+            issues = gh.issue_list(repo.name, "slingshot:approved")
+        except Exception:
+            return
+
+        for issue in issues:
+            issue_num = issue["number"]
+            try:
+                prs = gh.pr_list_by_head(
+                    repo.name, f"slingshot/{issue_num}", state="all",
+                )
+            except Exception:
+                continue
+
+            if not prs:
+                continue
+
+            pr = prs[0]
+            if pr.get("mergedAt") or (pr.get("state") or "").upper() in (
+                "CLOSED", "MERGED"
+            ):
+                continue
+
+            if (pr.get("state") or "").upper() != "OPEN":
+                continue
+
+            pr_num = pr["number"]
+
+            try:
+                status = gh.pr_check_status(repo.name, pr_num)
+            except Exception:
+                continue
+
+            checks = status.get("checks", [])
+            sha = status.get("sha", "")
+
+            if not checks:
+                continue
+
+            if any(not c["completed"] for c in checks):
+                continue
+
+            failing = [c for c in checks if c["failed"]]
+            if not failing:
+                continue
+
+            self._handle_ci_failure(repo, issue_num, pr_num, sha, failing)
+
+    def _handle_ci_failure(
+        self, repo: RepoConfig, issue_num: int, pr_num: int,
+        sha: str, failing_checks: list[dict],
+    ) -> None:
+        short_sha = sha[:7] if sha else "unknown"
+
+        urls = [f"- [{c['name']}]({c['url']})" if c.get("url") else f"- {c['name']}"
+                for c in failing_checks]
+        check_list = "\n".join(urls)
+
+        body = (
+            f"{CI_FAIL_MARKER}\n"
+            f"**CI Failure** on `{short_sha}`\n\n"
+            f"Failing checks:\n{check_list}\n\n"
+            f"Run `gh run view --repo {repo.name} --log-failed`"
+            f" to view logs."
+        )
+
+        try:
+            comments = gh.pr_comments(repo.name, pr_num)
+        except Exception:
+            comments = []
+
+        newest_ci_fail = None
+        for c in sorted(comments, key=lambda x: x.get("createdAt", ""), reverse=True):
+            if CI_FAIL_MARKER in c.get("body", ""):
+                newest_ci_fail = c
+                break
+
+        if newest_ci_fail is None or short_sha not in newest_ci_fail.get("body", ""):
+            try:
+                gh.pr_comment_create(repo.name, pr_num, body)
+            except Exception:
+                pass
+
+        fail_count = sum(
+            1 for c in comments
+            if REVIEW_FAIL_MARKER in c.get("body", "")
+            or CI_FAIL_MARKER in c.get("body", "")
+        )
+        # include the comment we just posted
+        if newest_ci_fail is None or short_sha not in newest_ci_fail.get("body", ""):
+            fail_count += 1
+
+        log.log_ci_failure(repo.name, issue_num, pr_num, len(failing_checks))
+
+        if fail_count >= self.config.review_fail_threshold:
+            self._transition_label(repo, issue_num,
+                                   "slingshot:approved", "slingshot:blocked")
+        else:
+            self._transition_label(repo, issue_num,
+                                   "slingshot:approved", "slingshot:implement")
 
     # ------------------------------------------------------------------
     # Claim and spawn workers
@@ -315,7 +424,7 @@ class Daemon:
                 fail_comments: list[str] = []
                 for c in comments:
                     body = c.get("body", "")
-                    if "<!-- slingshot:review-fail -->" not in body:
+                    if REVIEW_FAIL_MARKER not in body and CI_FAIL_MARKER not in body:
                         continue
                     if last_push is not None:
                         epoch = _comment_epoch(c.get("createdAt", ""))
@@ -536,7 +645,7 @@ class Daemon:
             comments = gh.pr_comments(ws.repo.name, pr_num)
             fail_count = sum(
                 1 for c in comments
-                if "<!-- slingshot:review-fail -->" in c.get("body", "")
+                if REVIEW_FAIL_MARKER in c.get("body", "")
             )
             if fail_count >= self.config.review_fail_threshold:
                 self._transition_label(ws.repo, issue_num, ws.flight_label,
@@ -646,7 +755,8 @@ class Daemon:
         comments = gh.pr_comments(repo.name, pr_num)
         fail_count = sum(
             1 for c in comments
-            if "<!-- slingshot:review-fail -->" in c.get("body", "")
+            if REVIEW_FAIL_MARKER in c.get("body", "")
+            or CI_FAIL_MARKER in c.get("body", "")
         )
         return pr_num, fail_count
 

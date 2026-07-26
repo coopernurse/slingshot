@@ -17,7 +17,10 @@ WORK_STATES = {"slingshot:implement", "slingshot:review"}
 # In-flight states (claimed, agent running).
 IN_FLIGHT_STATES = {"slingshot:implementing", "slingshot:reviewing"}
 
-# Terminal states (daemon takes no further action).
+# Terminal states: slingshot:approved (daemon watches CI here, but does not
+# poll/claim it) and slingshot:blocked (fully terminal).
+# slingshot:approved can transition to slingshot:implement or
+# slingshot:blocked via CI-failure detection.
 TERMINAL_STATES = {"slingshot:approved", "slingshot:blocked"}
 
 # Map in-flight → pre-claim (for reaper / back-off).

@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import json
 
+REVIEW_FAIL_MARKER = "<!-- slingshot:review-fail -->"
+CI_FAIL_MARKER = "<!-- slingshot:ci-fail -->"
+
 IMPLEMENT_SYSTEM = """You are an expert software engineer. Your task is to implement
 a specification that will be provided below. Follow it faithfully.
 - Write production-quality code.
@@ -221,7 +224,7 @@ def format_fail_summary(verdict_data: dict) -> str:
     """Format a review-fail summary comment with hidden marker."""
     sections = verdict_data.get("sections", {})
     lines = [
-        "<!-- slingshot:review-fail -->",
+        REVIEW_FAIL_MARKER,
         "## Slingshot Review: FAILED",
         "",
     ]
