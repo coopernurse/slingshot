@@ -1,10 +1,20 @@
 from __future__ import annotations
 
+import json
+import sys
+import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from slingshot.config import Config, RepoConfig
-from slingshot.daemon import Daemon, _comment_age, _comment_epoch, _newest_claim_comment
+from slingshot.daemon import (
+    Daemon,
+    _comment_age,
+    _comment_epoch,
+    _newest_claim_comment,
+    _run_agent,
+)
 from slingshot.prompts import CI_FAIL_MARKER, REVIEW_FAIL_MARKER
 
 
@@ -399,3 +409,43 @@ class TestHandleCiFailureTransitions:
         mock_tx.assert_called_once_with(
             repo, 1, "slingshot:approved", "slingshot:blocked",
         )
+def _ws():
+    return SimpleNamespace(proc=None)
+
+
+class TestRunAgent:
+    def test_captures_output_and_exit_code(self, tmp_path):
+        code, output = _run_agent(
+            f"{sys.executable} -c \"print('hello')\"",
+            "prompt.md", cwd=str(tmp_path), timeout=60, ws=_ws(),
+        )
+        assert code == 0
+        assert "hello" in output
+
+    def test_injects_opencode_config_content(self, tmp_path):
+        code, output = _run_agent(
+            f'{sys.executable} -c "import os; '
+            "print(os.environ['OPENCODE_CONFIG_CONTENT'])\"",
+            "prompt.md", cwd=str(tmp_path), timeout=60, ws=_ws(),
+        )
+        assert code == 0
+        cfg = json.loads(output)
+        assert cfg["permission"]["external_directory"] == "allow"
+
+    def test_command_not_found(self, tmp_path):
+        code, output = _run_agent(
+            "no-such-binary-xyz {prompt_file}",
+            "prompt.md", cwd=str(tmp_path), timeout=60, ws=_ws(),
+        )
+        assert code == -2
+        assert output == "agent command not found"
+
+    def test_wall_clock_timeout_kills_process(self, tmp_path):
+        start = time.time()
+        code, output = _run_agent(
+            f'{sys.executable} -c "import time; time.sleep(30)"',
+            "prompt.md", cwd=str(tmp_path), timeout=1, ws=_ws(),
+        )
+        assert code == -1
+        assert output == "agent timed out"
+        assert time.time() - start < 15

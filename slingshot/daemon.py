@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import shlex
 import shutil
 import signal
@@ -446,8 +447,6 @@ class Daemon:
         else:
             worktree = git.create_worktree_from_remote(ws.repo.path, issue_num)
 
-        _write_opencode_config(worktree)
-
         main_before = git.has_changes(ws.repo.path)
 
         prompt = prompts.render_implement_prompt(
@@ -496,9 +495,6 @@ class Daemon:
         archive_dir = ws.repo.path / ".slingshot" / "prompts"
         archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_file(prompt_file, archive_dir / prompt_file.name)
-
-        # Remove ephemeral opencode config so it is not committed
-        _rmtree(worktree / "opencode.json")
 
         if exit_code != 0 or not git.has_changes(worktree):
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
@@ -562,8 +558,6 @@ class Daemon:
         if not worktree.exists():
             worktree = git.create_worktree_from_remote(ws.repo.path, issue_num)
 
-        _write_opencode_config(worktree)
-
         default_branch = self._default_branch_for(ws.repo)
         spec = ws.issue_body or ""
 
@@ -615,9 +609,6 @@ class Daemon:
         archive_dir = ws.repo.path / ".slingshot" / "prompts"
         archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_file(prompt_file, archive_dir / prompt_file.name)
-
-        # Remove ephemeral opencode config so it is not committed
-        _rmtree(worktree / "opencode.json")
 
         verdict_data = prompts.parse_verdict(output)
         if exit_code != 0 or verdict_data is None:
@@ -785,28 +776,24 @@ def _copy_file(src, dst):
     shutil.copy2(src, dst)
 
 
-def _rmtree(path):
-    try:
-        path.unlink(missing_ok=True)
-    except (IsADirectoryError, PermissionError):
-        shutil.rmtree(path, ignore_errors=True)
-
-
-def _write_opencode_config(worktree):
-    """Write a minimal opencode.json so the agent treats the worktree as
-       its workspace."""
-    config_path = worktree / "opencode.json"
-    if not config_path.exists():
-        config_path.write_text(json.dumps({
-            "permission": {
-                "external_directory": "allow",
-            },
-        }, indent=2) + "\n")
-
-
 def _tail(text, n):
     lines = text.splitlines()
     return "\n".join(lines[-n:])
+
+
+# opencode anchors project config discovery at the repo's common git dir,
+# which for a linked worktree is the *main* checkout — so an opencode.json
+# written into the worktree is never loaded, and the whole worktree counts
+# as an "external directory". Inject the config via the environment instead.
+_OPENCODE_CONFIG_CONTENT = json.dumps({
+    "$schema": "https://opencode.ai/config.json",
+    "permission": {"external_directory": "allow"},
+})
+
+# How often to wake up and check the wall-clock deadline while waiting for
+# the agent. Kept small so a deadline that passes while the machine is
+# asleep is enforced soon after wake.
+_TIMEOUT_CHECK_SECONDS = 30
 
 
 def _run_agent(
@@ -820,22 +807,36 @@ def _run_agent(
 
     cmd = [prompt_file if p == "{prompt_file}" else p for p in parts]
 
+    env = os.environ.copy()
+    env["OPENCODE_CONFIG_CONTENT"] = _OPENCODE_CONFIG_CONTENT
+
     try:
         proc = subprocess.Popen(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-            text=True, cwd=cwd,
+            text=True, cwd=cwd, env=env,
         )
     except FileNotFoundError:
         return -2, "agent command not found"
 
     ws.proc = proc
+    # Enforce a wall-clock deadline. subprocess timeouts run on a monotonic
+    # clock that pauses while the machine is asleep, which can stretch a
+    # 30-minute timeout into many hours on a laptop.
+    deadline = time.time() + timeout
     try:
-        out, err = proc.communicate(timeout=timeout)
-        return proc.returncode, (out or "") + (err or "")
-    except subprocess.TimeoutExpired:
-        proc.kill()
-        proc.wait()
-        return -1, "agent timed out"
+        while True:
+            remaining = deadline - time.time()
+            if remaining <= 0:
+                proc.kill()
+                proc.wait()
+                return -1, "agent timed out"
+            try:
+                out, err = proc.communicate(
+                    timeout=min(remaining, _TIMEOUT_CHECK_SECONDS),
+                )
+                return proc.returncode, (out or "") + (err or "")
+            except subprocess.TimeoutExpired:
+                continue
     finally:
         ws.proc = None
 
