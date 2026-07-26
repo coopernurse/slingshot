@@ -41,3 +41,10 @@ def log_reap(repo: str, issue: int, from_state: str, to_state: str) -> None:
 
 def log_abort(repo: str, issue: int, reason: str) -> None:
     log(f"repo={repo} issue={issue} event=abort reason={reason}")
+
+
+def log_ci_failure(repo: str, issue: int, pr_num: int, failed_count: int) -> None:
+    log(
+        f"repo={repo} issue={issue} pr={pr_num} event=ci-failure "
+        f"failing_checks={failed_count}"
+    )

@@ -203,6 +203,54 @@ def label_create(repo: str, name: str, color: str = "0366d6") -> None:
 
 
 # ---------------------------------------------------------------------------
+# Check status
+# ---------------------------------------------------------------------------
+
+
+def pr_check_status(repo: str, pr_num: int) -> dict:
+    """Return {"sha": <head SHA>, "checks": [{"name", "completed", "failed", "url"}]}.
+
+    Uses ``gh pr view`` with ``--json headRefOid,statusCheckRollup`` (not
+    ``gh pr checks``, which exits non-zero on failure).
+    """
+    raw = _json([
+        "gh", "pr", "view", "--repo", repo, str(pr_num),
+        "--json", "headRefOid,statusCheckRollup",
+    ]) or {}
+    sha = raw.get("headRefOid") or ""
+    checks: list[dict] = []
+    rollup = raw.get("statusCheckRollup") or []
+    for item in rollup:
+        ctx = item.get("__typename") or ""
+        # --- CheckRun shape ---
+        if ctx == "CheckRun" or ctx == "":
+            name = item.get("name", "")
+            status = item.get("status", "")
+            conclusion = item.get("conclusion", "")
+            url = item.get("detailsUrl", "")
+            completed = status == "COMPLETED"
+            failed = completed and conclusion in (
+                "FAILURE", "TIMED_OUT", "ACTION_REQUIRED"
+            )
+        # --- StatusContext shape ---
+        elif ctx == "StatusContext":
+            name = item.get("context", "")
+            state = item.get("state", "")
+            url = item.get("targetUrl", "")
+            completed = state in ("SUCCESS", "FAILURE", "ERROR")
+            failed = state in ("FAILURE", "ERROR")
+        else:
+            continue
+        checks.append({
+            "name": name,
+            "completed": completed,
+            "failed": failed,
+            "url": url,
+        })
+    return {"sha": sha, "checks": checks}
+
+
+# ---------------------------------------------------------------------------
 # Repo metadata
 # ---------------------------------------------------------------------------
 
