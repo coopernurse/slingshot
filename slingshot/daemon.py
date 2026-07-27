@@ -1477,11 +1477,15 @@ def register_parser(subparsers: argparse._SubParsersAction) -> None:
     p = subparsers.add_parser("daemon", help="Run the slingshot polling daemon")
     p.add_argument("--config", help="Path to config file")
     p.add_argument("--once", action="store_true", help="Run one poll cycle and exit")
+    p.add_argument("-v", "--verbose", action="store_true", default=False,
+                   help="Emit verbose subprocess output (cmd-output events)")
     p.set_defaults(func=cmd_daemon)
 
 
 def cmd_daemon(args: argparse.Namespace) -> None:
     from slingshot.config import load_config
+
+    log.set_verbose(args.verbose)
 
     cfg = load_config(args.config)
     if not cfg.repos:

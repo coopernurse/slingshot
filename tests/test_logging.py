@@ -6,7 +6,7 @@ from datetime import datetime
 from unittest import mock
 
 from slingshot import gh, git_utils
-from slingshot.logging import log, log_cmd_output, log_lines
+from slingshot.logging import log, log_cmd_output, log_lines, set_verbose
 
 
 class TestLogTimestamp:
@@ -25,6 +25,9 @@ class TestLogTimestamp:
 
 
 class TestLogCmdOutput:
+    def setup_method(self):
+        set_verbose(True)
+
     def test_emits_one_line_per_nonempty_line(self, capsys):
         log_cmd_output(["git", "worktree"], "line1\n\nline2\n", "")
         captured = capsys.readouterr().out
@@ -97,6 +100,9 @@ class TestCaptureParameterRemoved:
 
 
 class TestRunRoutesOutputThroughLogger:
+    def setup_method(self):
+        set_verbose(True)
+
     def test_git_utils_run_logs_stdout(self, capsys):
         mock_result = mock.Mock()
         mock_result.returncode = 0
