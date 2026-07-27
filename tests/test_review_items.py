@@ -82,12 +82,24 @@ class TestReviewItemQualifying:
 class TestQualifyingFunction:
     def test_filters_non_qualifying_items(self):
         items = [
-            ReviewItem(body="/slingshot a", author="good",
-                       author_association="MEMBER", alias="S1"),
-            ReviewItem(body="not slingshot", author="good",
-                       author_association="MEMBER", alias="S2"),
-            ReviewItem(body="/slingshot b", author="daemon-bot",
-                       author_association="MEMBER", alias="S3"),
+            ReviewItem(
+                body="/slingshot a",
+                author="good",
+                author_association="MEMBER",
+                alias="S1",
+            ),
+            ReviewItem(
+                body="not slingshot",
+                author="good",
+                author_association="MEMBER",
+                alias="S2",
+            ),
+            ReviewItem(
+                body="/slingshot b",
+                author="daemon-bot",
+                author_association="MEMBER",
+                alias="S3",
+            ),
         ]
         result = qualifying(items, "daemon-bot")
         assert len(result) == 1
@@ -97,8 +109,11 @@ class TestQualifyingFunction:
 class TestPartition:
     def test_unaddressed_no_markers(self):
         item = ReviewItem(
-            alias="S1", kind="inline", thread_node_id="node1",
-            body="/slingshot fix this", updated_at="2025-01-01T00:00:00Z",
+            alias="S1",
+            kind="inline",
+            thread_node_id="node1",
+            body="/slingshot fix this",
+            updated_at="2025-01-01T00:00:00Z",
         )
         unaddr, addr, res = partition([item])
         assert len(unaddr) == 1
@@ -108,8 +123,11 @@ class TestPartition:
 
     def test_addressed_unresolved(self):
         item = ReviewItem(
-            alias="S1", kind="inline", thread_node_id="node1",
-            body="/slingshot fix this", updated_at="2025-01-01T00:00:00Z",
+            alias="S1",
+            kind="inline",
+            thread_node_id="node1",
+            body="/slingshot fix this",
+            updated_at="2025-01-01T00:00:00Z",
             addressed_epoch=1735689601,  # after updated
         )
         unaddr, addr, res = partition([item])
@@ -120,8 +138,11 @@ class TestPartition:
 
     def test_resolved_inline(self):
         item = ReviewItem(
-            alias="S1", kind="inline", thread_node_id="node1",
-            body="/slingshot fix this", updated_at="2025-01-01T00:00:00Z",
+            alias="S1",
+            kind="inline",
+            thread_node_id="node1",
+            body="/slingshot fix this",
+            updated_at="2025-01-01T00:00:00Z",
             is_resolved=True,
         )
         unaddr, addr, res = partition([item])
@@ -132,7 +153,8 @@ class TestPartition:
 
     def test_resolved_conversation_retraction(self):
         item = ReviewItem(
-            alias="S1", kind="conversation",
+            alias="S1",
+            kind="conversation",
             body="thanks, I removed the prefix",
             updated_at="2025-01-01T00:00:00Z",
             addressed_epoch=1735689600,  # was previously addressed
@@ -144,8 +166,11 @@ class TestPartition:
 
     def test_disputed_beats_addressed(self):
         item = ReviewItem(
-            alias="S1", kind="inline", thread_node_id="node1",
-            body="/slingshot fix this", updated_at="2025-01-01T00:00:00Z",
+            alias="S1",
+            kind="inline",
+            thread_node_id="node1",
+            body="/slingshot fix this",
+            updated_at="2025-01-01T00:00:00Z",
             addressed_epoch=1735689601,
             disputed_epoch=1735689610,
         )
@@ -155,7 +180,9 @@ class TestPartition:
 
     def test_edit_after_addressed_unaddressed(self):
         item = ReviewItem(
-            alias="S1", kind="inline", thread_node_id="node1",
+            alias="S1",
+            kind="inline",
+            thread_node_id="node1",
             body="/slingshot fix this",
             updated_at="2025-01-02T00:00:00Z",  # epoch > 1735689600
             addressed_epoch=1735689600,  # Jan 1 2025
@@ -226,10 +253,12 @@ class TestParseDispositions:
 class TestGetNewestItemEpoch:
     def test_returns_max_epoch(self):
         items = [
-            ReviewItem(created_at="2025-01-01T00:00:00Z",
-                       updated_at="2025-01-01T00:00:00Z"),
-            ReviewItem(created_at="2025-01-02T00:00:00Z",
-                       updated_at="2025-01-02T00:00:00Z"),
+            ReviewItem(
+                created_at="2025-01-01T00:00:00Z", updated_at="2025-01-01T00:00:00Z"
+            ),
+            ReviewItem(
+                created_at="2025-01-02T00:00:00Z", updated_at="2025-01-02T00:00:00Z"
+            ),
         ]
         result = get_newest_item_epoch(items)
         assert result == 1735776000  # Jan 2 2025
@@ -254,41 +283,51 @@ class TestParseIsoEpoch:
 
 class TestFetchItems:
     def test_inline_items_from_graphql(self):
-        thread_data = [{
-            "id": "node_abc",
-            "isResolved": False,
-            "isOutdated": False,
-            "path": "src/foo.py",
-            "line": 42,
-            "originalLine": None,
-            "diffHunk": "@@ -40,6 +40,8 @@",
-            "comments": [{
+        thread_data = [
+            {
+                "id": "node_abc",
+                "isResolved": False,
+                "isOutdated": False,
+                "path": "src/foo.py",
+                "line": 42,
+                "originalLine": None,
+                "comments": [
+                    {
+                        "body": "/slingshot fix this",
+                        "author": "trusted",
+                        "authorAssociation": "MEMBER",
+                        "createdAt": "2025-01-01T00:00:00Z",
+                        "updatedAt": "2025-01-01T00:00:00Z",
+                    }
+                ],
+            }
+        ]
+        rest_review = [
+            {
+                "id": "1001",
                 "body": "/slingshot fix this",
+                "path": "src/foo.py",
+                "line": 42,
+                "original_line": None,
+                "diff_hunk": "@@ -40,6 +40,8 @@",
                 "author": "trusted",
-                "authorAssociation": "MEMBER",
-                "createdAt": "2025-01-01T00:00:00Z",
-                "updatedAt": "2025-01-01T00:00:00Z",
-            }],
-        }]
-        rest_review = [{
-            "id": "1001",
-            "body": "/slingshot fix this",
-            "path": "src/foo.py",
-            "line": 42,
-            "original_line": None,
-            "diff_hunk": "@@ -40,6 +40,8 @@",
-            "author": "trusted",
-            "author_association": "MEMBER",
-            "created_at": "2025-01-01T00:00:00Z",
-            "updated_at": "2025-01-01T00:00:00Z",
-            "in_reply_to_id": None,
-            "html_url": "https://github.com/o/r/pull/1#discussion_r1001",
-        }]
-        with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=(thread_data, 1)), \
-             patch("slingshot.review_items.gh.pr_review_comments",
-                   return_value=rest_review), \
-             patch("slingshot.review_items.gh.pr_comments", return_value=[]):
+                "author_association": "MEMBER",
+                "created_at": "2025-01-01T00:00:00Z",
+                "updated_at": "2025-01-01T00:00:00Z",
+                "in_reply_to_id": None,
+                "html_url": "https://github.com/o/r/pull/1#discussion_r1001",
+            }
+        ]
+        with (
+            patch(
+                "slingshot.review_items.gh.pr_review_threads",
+                return_value=(thread_data, 1),
+            ),
+            patch(
+                "slingshot.review_items.gh.pr_review_comments", return_value=rest_review
+            ),
+            patch("slingshot.review_items.gh.pr_comments", return_value=[]),
+        ):
             all_items, conv_items = fetch_items("o/r", 1)
             assert len(all_items) == 1
             assert all_items[0].kind == "inline"
@@ -298,21 +337,22 @@ class TestFetchItems:
             assert conv_items == []
 
     def test_conversation_items_from_rest(self):
-        conv_comments = [{
-            "id": "2001",
-            "body": "/slingshot add tests",
-            "author": "trusted",
-            "authorAssociation": "MEMBER",
-            "createdAt": "2025-01-01T00:00:00Z",
-            "updatedAt": "2025-01-01T00:00:00Z",
-            "html_url": "https://github.com/o/r/pull/1#issuecomment-2001",
-        }]
-        with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=([], 0)), \
-             patch("slingshot.review_items.gh.pr_review_comments",
-                   return_value=[]), \
-             patch("slingshot.review_items.gh.pr_comments",
-                   return_value=conv_comments):
+        conv_comments = [
+            {
+                "id": "2001",
+                "body": "/slingshot add tests",
+                "author": "trusted",
+                "authorAssociation": "MEMBER",
+                "createdAt": "2025-01-01T00:00:00Z",
+                "updatedAt": "2025-01-01T00:00:00Z",
+                "html_url": "https://github.com/o/r/pull/1#issuecomment-2001",
+            }
+        ]
+        with (
+            patch("slingshot.review_items.gh.pr_review_threads", return_value=([], 0)),
+            patch("slingshot.review_items.gh.pr_review_comments", return_value=[]),
+            patch("slingshot.review_items.gh.pr_comments", return_value=conv_comments),
+        ):
             all_items, conv_items = fetch_items("o/r", 1)
             assert len(all_items) == 1
             assert all_items[0].kind == "conversation"
@@ -339,12 +379,11 @@ class TestFetchItems:
                 "updatedAt": "2025-01-02T00:00:00Z",
             },
         ]
-        with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=([], 0)), \
-             patch("slingshot.review_items.gh.pr_review_comments",
-                   return_value=[]), \
-             patch("slingshot.review_items.gh.pr_comments",
-                   return_value=conv_comments):
+        with (
+            patch("slingshot.review_items.gh.pr_review_threads", return_value=([], 0)),
+            patch("slingshot.review_items.gh.pr_review_comments", return_value=[]),
+            patch("slingshot.review_items.gh.pr_comments", return_value=conv_comments),
+        ):
             all_items, conv_items = fetch_items("o/r", 1)
             assert len(all_items) == 1
             assert all_items[0].addressed_epoch > 0
@@ -352,13 +391,14 @@ class TestFetchItems:
 
 class TestTruncationWarning:
     def test_warning_logged_when_thread_count_reaches_100(self):
-        with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=([], 100)), \
-             patch("slingshot.review_items.gh.pr_review_comments",
-                   return_value=[]), \
-             patch("slingshot.review_items.gh.pr_comments",
-                   return_value=[]), \
-             patch("slingshot.review_items.log.log") as mock_log:
+        with (
+            patch(
+                "slingshot.review_items.gh.pr_review_threads", return_value=([], 100)
+            ),
+            patch("slingshot.review_items.gh.pr_review_comments", return_value=[]),
+            patch("slingshot.review_items.gh.pr_comments", return_value=[]),
+            patch("slingshot.review_items.log.log") as mock_log,
+        ):
             fetch_items("o/r", 1)
         mock_log.assert_called_once()
         log_msg = mock_log.call_args[0][0]
@@ -366,12 +406,11 @@ class TestTruncationWarning:
         assert "total_threads=100" in log_msg
 
     def test_no_warning_when_thread_count_below_100(self):
-        with patch("slingshot.review_items.gh.pr_review_threads",
-                   return_value=([], 5)), \
-             patch("slingshot.review_items.gh.pr_review_comments",
-                   return_value=[]), \
-             patch("slingshot.review_items.gh.pr_comments",
-                   return_value=[]), \
-             patch("slingshot.review_items.log.log") as mock_log:
+        with (
+            patch("slingshot.review_items.gh.pr_review_threads", return_value=([], 5)),
+            patch("slingshot.review_items.gh.pr_review_comments", return_value=[]),
+            patch("slingshot.review_items.gh.pr_comments", return_value=[]),
+            patch("slingshot.review_items.log.log") as mock_log,
+        ):
             fetch_items("o/r", 1)
         mock_log.assert_not_called()

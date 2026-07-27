@@ -37,7 +37,6 @@ class ReviewItem:
     line: int | None = None
     original_line: int | None = None
     is_outdated: bool = False
-    diff_hunk: str = ""
     is_resolved: bool = False
 
     # Markers found in replies or daemon summary comment
@@ -67,6 +66,7 @@ def _parse_iso_epoch(s: str) -> int:
     if not s:
         return 0
     import datetime
+
     for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
         try:
             dt = datetime.datetime.strptime(s, fmt).replace(
@@ -78,8 +78,9 @@ def _parse_iso_epoch(s: str) -> int:
     return 0
 
 
-def _reply_markers(replies: list[dict],
-                   thread_node_id: str) -> tuple[int, int, str, str]:
+def _reply_markers(
+    replies: list[dict], thread_node_id: str
+) -> tuple[int, int, str, str]:
     """Return (addressed_epoch, disputed_epoch, addressed_body, disputed_body)."""
     addr = 0
     disp = 0
@@ -155,12 +156,14 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
         url = f"https://github.com/{repo}/pull/{pr_num}#discussion_r{comment_id}"
 
         addr_epoch, disp_epoch, addr_body, _ = _reply_markers(
-            comments[1:], thread_node_id,
+            comments[1:],
+            thread_node_id,
         )
         # Also check for markers in REST replies (daemon replies via REST)
         all_replies = rest_comments_replies(rest_comments, comment_id)
         rest_addr, rest_disp, rest_addr_body, _ = _reply_markers(
-            all_replies, thread_node_id,
+            all_replies,
+            thread_node_id,
         )
         if rest_addr > addr_epoch:
             addr_epoch = rest_addr
@@ -183,7 +186,6 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
             line=tline,
             original_line=thread.get("originalLine"),
             is_outdated=thread.get("isOutdated", False),
-            diff_hunk=thread.get("diffHunk", "") or "",
             is_resolved=is_resolved,
             addressed_epoch=addr_epoch,
             disputed_epoch=disp_epoch,
@@ -248,7 +250,7 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
                 idx = body.find(marker_prefix, idx)
                 if idx == -1:
                     break
-                rest = body[idx + len(marker_prefix):]
+                rest = body[idx + len(marker_prefix) :]
                 space_idx = rest.find(" ")
                 end_idx = space_idx if space_idx != -1 else None
                 ref = rest[:end_idx].strip()
@@ -274,7 +276,8 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
                                 body=orig.get("body", ""),
                                 author=orig.get("author", ""),
                                 author_association=orig.get(
-                                    "authorAssociation", "",
+                                    "authorAssociation",
+                                    "",
                                 ),
                                 created_at=orig.get("createdAt", ""),
                                 updated_at=orig.get("updatedAt", ""),
@@ -307,7 +310,8 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
 
 
 def rest_comments_replies(
-    rest_comments: list[dict], parent_id: str,
+    rest_comments: list[dict],
+    parent_id: str,
 ) -> list[dict]:
     """Return REST review comments that are replies to *parent_id*."""
     if not parent_id:
@@ -333,8 +337,12 @@ def get_newest_item_epoch(items: list[ReviewItem]) -> int:
     return best
 
 
-def partition(items: list[ReviewItem]) -> tuple[
-    list[ReviewItem], list[ReviewItem], list[ReviewItem],
+def partition(
+    items: list[ReviewItem],
+) -> tuple[
+    list[ReviewItem],
+    list[ReviewItem],
+    list[ReviewItem],
 ]:
     """Partition qualified items into (unaddressed, addressed_unresolved, resolved).
 

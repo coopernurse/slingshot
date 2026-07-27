@@ -53,6 +53,41 @@ The overall verdict must be "pass" only if ALL sections pass.  Any section
 failure means the overall verdict is "fail"."""
 
 
+SYNTHESIS_SYSTEM = """You are an expert code reviewer serving as a synthesis /
+tie-breaking agent.
+You will be given a specification, a diff, and the raw outputs from N
+independent review agents. Your job is to synthesize their findings into a
+single unified verdict.
+
+- If all N models agree on the verdict, rubber-stamp the consensus.
+- If there is dissent, act as the **tiebreaker**: produce a final verdict,
+  explain the minority position in the "dissent" field, and report the
+  vote counts in the "voters" field. Every model gets equal weight (one
+  vote).
+
+Your output MUST end with a fenced JSON block (```json ... ```) in this
+exact format:
+
+```json
+{{
+  "verdict": "pass" | "fail",
+  "voters": {{"pass": 2, "fail": 1}},
+  "sections": {{
+    "spec_fidelity":   {{"status": "pass" | "fail", "notes": "..."}},
+    "security":        {{"status": "pass" | "fail", "notes": "..."}},
+    "regression_risk": {{"status": "pass" | "fail", "notes": "..."}},
+    "naming_style":    {{"status": "pass" | "fail", "notes": "..."}},
+    "test_quality":    {{"status": "pass" | "fail", "notes": "..."}}
+  }},
+  "dissent": "Model 2 flagged regression_risk: <specific concern about...>",
+  "summary": "..."
+}}
+```
+
+The overall verdict must be "pass" only if ALL sections pass. Any section
+failure means the overall verdict is "fail"."""
+
+
 HUMAN_ITEMS_DISPOSITION = """You MUST end your output with a fenced JSON block
 (```json ... ```) in this format:
 
@@ -84,8 +119,6 @@ def _format_item_block(item: ReviewItem) -> str:
         if item.is_outdated:
             loc += " [OUTDATED]"
         lines.append(f"  Location: {loc}")
-    if item.diff_hunk:
-        lines.append(f"  Diff hunk:\n```diff\n{item.diff_hunk}\n```")
     lines.append(f"  Body:\n> {item.body}")
     if item.addressed_reply_body:
         # Strip hidden markers for cleaner prompt rendering
@@ -153,25 +186,42 @@ def render_implement_prompt(
     parts = [system, "", "## Instructions", "", instruction, ""]
 
     if worktree_path:
-        parts.extend([
-            "## Working directory",
-            "",
-            f"You are working in a git worktree of the repository at "
-            f"`{worktree_path}`.",
-            "Your current directory IS the repository — all file paths in the "
-            "spec are relative to it.",
-            "Do NOT create, rename, or switch branches, and do NOT run git "
-            "commands against any other checkout of this repository.",
-            "",
-        ])
+        parts.extend(
+            [
+                "## Working directory",
+                "",
+                f"You are working in a git worktree of the repository at "
+                f"`{worktree_path}`.",
+                "Your current directory IS the repository — all file paths in the "
+                "spec are relative to it.",
+                "Do NOT create, rename, or switch branches, and do NOT run git "
+                "commands against any other checkout of this repository.",
+                "",
+            ]
+        )
 
     if is_conflicting:
         parts.extend([
             "## Merge Conflicts",
             "",
             "This branch has merge conflicts with the default branch. "
-            "Before addressing any other items, merge the latest default "
-            "branch into your branch and resolve all conflicts.",
+            "Your FIRST and ONLY task is to resolve them:",
+            "",
+            "1. **Merge** the latest default branch into the current branch: "
+            "`git fetch origin && git merge origin/main` (replace `main` with "
+            "the default branch name if different).",
+            "2. **Resolve** all conflicts. Edit the conflicting files so they "
+            "compile, pass tests, and correctly combine both sides of the merge.",
+            "3. **Verify** the diff is non-empty: `git diff --stat origin/main` "
+            "must show changes.",
+            "4. **Run tests** to confirm the resolution didn't break anything.",
+            "",
+            "Do NOT commit, push, or open pull requests. The automation will "
+            "stage, commit, and push once you exit. Leave your changes staged "
+            "or in the working tree — do NOT run `git commit`.",
+            "",
+            "Do NOT address any other items from the spec. Focus exclusively on "
+            "resolving the merge conflict. The review phase will follow.",
             "",
         ])
 
@@ -182,14 +232,17 @@ def render_implement_prompt(
         parts.append(_render_items_section(items, "Human Review Items"))
         parts.extend(["", HUMAN_ITEMS_DISPOSITION, ""])
 
-    parts.extend([
-        "## Specification",
-        "",
-        spec,
-        "",
-        "## Output",
-        "",
-        "Summarise the changes you made."])
+    parts.extend(
+        [
+            "## Specification",
+            "",
+            spec,
+            "",
+            "## Output",
+            "",
+            "Summarise the changes you made.",
+        ]
+    )
     return "\n".join(parts)
 
 
@@ -215,7 +268,8 @@ def render_review_prompt(
     else:
         system = REVIEW_SYSTEM.format(default_branch=default_branch)
     parts = [
-        system, "",
+        system,
+        "",
         "## Instructions",
         "",
         f"1. Run `git diff origin/{default_branch}...HEAD` to see the full diff.",
@@ -226,13 +280,15 @@ def render_review_prompt(
     ]
 
     if worktree_path:
-        parts.extend([
-            "## Working directory",
-            "",
-            f"You are working in a git worktree at `{worktree_path}`. Do NOT "
-            "run git commands against any other checkout of this repository.",
-            "",
-        ])
+        parts.extend(
+            [
+                "## Working directory",
+                "",
+                f"You are working in a git worktree at `{worktree_path}`. Do NOT "
+                "run git commands against any other checkout of this repository.",
+                "",
+            ]
+        )
 
     if addressed_unresolved:
         parts.append(
@@ -244,22 +300,25 @@ def render_review_prompt(
         parts.append(
             "For each item above, verify the implementer's claimed fix "
             "against the diff.  If any item was NOT actually fixed, set "
-            "`human_items.status` to `\"fail\"` and list the unsolved items "
+            '`human_items.status` to `"fail"` and list the unsolved items '
             "in `human_items.unsolved`.\n",
         )
 
     if resolved:
         parts.append(
             _render_items_section(
-                resolved, "Human Review Items — Already Resolved (informational)",
+                resolved,
+                "Human Review Items — Already Resolved (informational)",
             ),
         )
 
-    parts.extend([
-        "## Specification",
-        "",
-        spec,
-    ])
+    parts.extend(
+        [
+            "## Specification",
+            "",
+            spec,
+        ]
+    )
 
     # Append the updated verdict format with human_items extension
     verdict_format = (
@@ -267,7 +326,7 @@ def render_review_prompt(
         "(```json ... ```) in this exact format:\n\n"
         "```json\n"
         "{{\n"
-        "  \"verdict\": \"pass\" | \"fail\",\n"
+        '  "verdict": "pass" | "fail",\n'
         '  "sections": {{\n'
         '    "spec_fidelity":   {{"status": "pass" | "fail", "notes": "..."}},\n'
         '    "security":        {{"status": "pass" | "fail", "notes": "..."}},\n'
@@ -282,6 +341,54 @@ def render_review_prompt(
         "```"
     )
     parts.append(verdict_format)
+    return "\n".join(parts)
+
+
+def render_synthesis_prompt(
+    spec: str,
+    default_branch: str,
+    review_outputs: list[str],
+    worktree_path: str | None = None,
+) -> str:
+    system = SYNTHESIS_SYSTEM
+    parts = [
+        system,
+        "",
+        "## Instructions",
+        "",
+        f"1. Run `git diff origin/{default_branch}...HEAD` to see the full diff.",
+        "2. Below are the raw outputs from N independent review agents.",
+        "3. Synthesize their findings into a single unified verdict.",
+        "4. If all N agree, rubber-stamp the consensus.",
+        "5. If there is dissent, act as tiebreaker — produce a final verdict,",
+        '   explain the minority position in the "dissent" field, and report',
+        '   vote counts in "voters".',
+        "6. End your output with the JSON verdict block as described above.",
+        "",
+    ]
+
+    if worktree_path:
+        parts.extend(
+            [
+                "## Working directory",
+                "",
+                f"You are working in a git worktree at `{worktree_path}`. Do NOT "
+                "run git commands against any other checkout of this repository.",
+                "",
+            ]
+        )
+
+    parts.append("## Specification")
+    parts.append("")
+    parts.append(spec)
+    parts.append("")
+
+    for i, output in enumerate(review_outputs, 1):
+        parts.append(f"## Review Agent {i} Output")
+        parts.append("")
+        parts.append(output)
+        parts.append("")
+
     return "\n".join(parts)
 
 
@@ -340,15 +447,25 @@ def compute_effective_verdict(verdict_data: dict) -> str:
     return "pass"
 
 
-def format_pass_summary(verdict_data: dict) -> str:
+def format_pass_summary(
+    verdict_data: dict, voters: dict | None = None, dissent: str | None = None
+) -> str:
     """Format a review-pass summary comment."""
     sections = verdict_data.get("sections", {})
-    lines = ["## Slingshot Review: PASSED", ""]
+    header = "## Slingshot Review: PASSED"
+    if voters:
+        pass_votes = voters.get("pass", 0)
+        fail_votes = voters.get("fail", 0)
+        total = pass_votes + fail_votes
+        if total > 0:
+            header = f"## Slingshot Review: PASSED ({pass_votes}/{total})"
+    lines = [header, ""]
     for label, display in [
         ("spec_fidelity", "Spec Fidelity"),
         ("security", "Security"),
         ("regression_risk", "Regression Risk"),
         ("naming_style", "Naming & Style"),
+        ("test_quality", "Test Quality"),
     ]:
         sec = sections.get(label, {})
         lines.append(f"**{display}:** {sec.get('status', '?')}")
@@ -356,18 +473,31 @@ def format_pass_summary(verdict_data: dict) -> str:
         if notes:
             lines.append(f"> {notes}")
         lines.append("")
+    if dissent:
+        lines.append("### Dissent")
+        lines.append(dissent)
+        lines.append("")
     summary = verdict_data.get("summary", "")
     if summary:
         lines.append(summary)
     return "\n".join(lines)
 
 
-def format_fail_summary(verdict_data: dict) -> str:
+def format_fail_summary(
+    verdict_data: dict, voters: dict | None = None, dissent: str | None = None
+) -> str:
     """Format a review-fail summary comment with hidden marker."""
     sections = verdict_data.get("sections", {})
+    header = "## Slingshot Review: FAILED"
+    if voters:
+        pass_votes = voters.get("pass", 0)
+        fail_votes = voters.get("fail", 0)
+        total = pass_votes + fail_votes
+        if total > 0:
+            header = f"## Slingshot Review: FAILED ({pass_votes}/{total})"
     lines = [
         REVIEW_FAIL_MARKER,
-        "## Slingshot Review: FAILED",
+        header,
         "",
     ]
     for label, display in [
@@ -375,6 +505,7 @@ def format_fail_summary(verdict_data: dict) -> str:
         ("security", "Security"),
         ("regression_risk", "Regression Risk"),
         ("naming_style", "Naming & Style"),
+        ("test_quality", "Test Quality"),
     ]:
         sec = sections.get(label, {})
         status = sec.get("status", "?")
@@ -384,13 +515,16 @@ def format_fail_summary(verdict_data: dict) -> str:
         if notes:
             lines.append(f"> {notes}")
         lines.append("")
+    if dissent:
+        lines.append("### Dissent")
+        lines.append(dissent)
+        lines.append("")
 
     human_items = verdict_data.get("human_items")
     if isinstance(human_items, dict) and human_items.get("status") == "fail":
         unsolved = human_items.get("unsolved", [])
         if unsolved:
-            aliases = [it.get("id", "?") for it in unsolved
-                       if isinstance(it, dict)]
+            aliases = [it.get("id", "?") for it in unsolved if isinstance(it, dict)]
             lines.append(
                 f":x: **Human Review Items (unsolved):** {', '.join(aliases)}",
             )

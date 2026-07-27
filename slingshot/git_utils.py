@@ -5,15 +5,17 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from slingshot.logging import log_cmd_output
+
 
 def _run(
-    args: list[str], *,
+    args: list[str],
+    *,
     cwd: str | Path | None = None,
-    capture: bool = True,
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(
         args,
-        capture_output=capture,
+        capture_output=True,
         text=True,
         cwd=str(cwd) if cwd else None,
         timeout=300,
@@ -23,13 +25,14 @@ def _run(
         raise subprocess.CalledProcessError(
             result.returncode, args, output=result.stdout or "", stderr=stderr
         )
+    log_cmd_output(args, result.stdout, result.stderr)
     return result
 
 
 def _check(args: list[str], *, cwd: str | Path | None = None) -> bool:
     """Run a command; return True if exit 0, False otherwise."""
     try:
-        _run(args, cwd=cwd, capture=True)
+        _run(args, cwd=cwd)
         return True
     except subprocess.CalledProcessError:
         return False
@@ -37,7 +40,7 @@ def _check(args: list[str], *, cwd: str | Path | None = None) -> bool:
 
 def fetch_origin(checkout: Path) -> None:
     """Fetch updates from origin in the bare checkout."""
-    _run(["git", "fetch", "origin"], cwd=checkout, capture=False)
+    _run(["git", "fetch", "origin"], cwd=checkout)
 
 
 def remote_branch_exists(checkout: Path, branch: str) -> bool:
@@ -48,8 +51,9 @@ def remote_branch_exists(checkout: Path, branch: str) -> bool:
 def branch_last_commit_epoch(checkout: Path, branch: str) -> int | None:
     """Return committer-date (epoch seconds) of origin/<branch> tip, or None."""
     try:
-        result = _run(["git", "log", "-1", "--format=%ct", f"origin/{branch}"],
-                      cwd=checkout)
+        result = _run(
+            ["git", "log", "-1", "--format=%ct", f"origin/{branch}"], cwd=checkout
+        )
         return int(result.stdout.strip())
     except (subprocess.CalledProcessError, ValueError):
         return None
@@ -100,7 +104,7 @@ def create_worktree(checkout: Path, issue_num: int, base: str) -> Path:
     _run([
         "git", "worktree", "add", str(wt_path),
         "-b", branch, f"origin/{base}",
-    ], cwd=checkout, capture=False)
+    ], cwd=checkout)
     return wt_path
 
 
@@ -121,19 +125,19 @@ def create_worktree_from_remote(checkout: Path, issue_num: int) -> Path:
     _run([
         "git", "worktree", "add", str(wt_path),
         "--track", "-b", branch, f"origin/{branch}",
-    ], cwd=checkout, capture=False)
+    ], cwd=checkout)
     return wt_path
 
 
 def checkout_in_worktree(worktree: Path, branch: str) -> None:
     """In an existing worktree, checkout a branch (tracking origin)."""
-    _run(["git", "checkout", "-B", branch], cwd=worktree, capture=False)
+    _run(["git", "checkout", "-B", branch], cwd=worktree)
 
 
 def _delete_branch_if_exists(checkout: Path, branch: str) -> None:
     """Delete a local branch if it exists (no-op otherwise)."""
     try:
-        _run(["git", "branch", "-D", branch], cwd=checkout, capture=True)
+        _run(["git", "branch", "-D", branch], cwd=checkout)
     except subprocess.CalledProcessError:
         pass
 
@@ -151,18 +155,52 @@ def has_changes(worktree: Path) -> bool:
         return False
 
 
+def has_unpushed_commits(worktree: Path) -> bool:
+    """Return True if the current branch has commits not yet pushed to remote."""
+    try:
+        result = _run(
+            ["git", "log", "--oneline", "@{u}..HEAD"],
+            cwd=worktree,
+        )
+        return bool(result.stdout.strip())
+    except subprocess.CalledProcessError:
+        return False
+
+
+def worktree_status(worktree: Path) -> str:
+    """Return a diagnostic snapshot of the worktree: status, log, branch info."""
+    lines: list[str] = []
+    try:
+        r = _run(["git", "status", "--porcelain"], cwd=worktree)
+        lines.append(f"git status --porcelain: {r.stdout.strip() or '(clean)'}")
+    except Exception as exc:
+        lines.append(f"git status --porcelain: ERROR {exc}")
+    try:
+        r = _run(["git", "log", "--oneline", "-5"], cwd=worktree)
+        lines.append(f"git log --oneline -5:{chr(10)}{r.stdout.strip()}")
+    except Exception as exc:
+        lines.append(f"git log --oneline -5: ERROR {exc}")
+    try:
+        r = _run(["git", "branch", "-v"], cwd=worktree)
+        lines.append(f"git branch -v:{chr(10)}{r.stdout.strip()}")
+    except Exception as exc:
+        lines.append(f"git branch -v: ERROR {exc}")
+    return "\n".join(lines)
+
+
 def commit_changes(worktree: Path, message: str) -> None:
     """Add all changes and commit."""
-    _run(["git", "add", "-A"], cwd=worktree, capture=False)
-    _run(["git", "commit", "-m", message], cwd=worktree, capture=False)
+    _run(["git", "add", "-A"], cwd=worktree)
+    _run(["git", "commit", "-m", message], cwd=worktree)
 
 
 def push_branch(worktree: Path) -> None:
     """Push the current branch to origin and set upstream."""
     branch_name = _run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree,
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree,
     ).stdout.strip()
-    _run(["git", "push", "-u", "origin", branch_name], cwd=worktree, capture=False)
+    _run(["git", "push", "-u", "origin", branch_name], cwd=worktree)
 
 
 def worktree_remove(checkout: Path, issue_num: int) -> None:
@@ -173,7 +211,7 @@ def worktree_remove(checkout: Path, issue_num: int) -> None:
     try:
         _run([
             "git", "worktree", "remove", str(wt_path), "--force",
-        ], cwd=checkout, capture=False)
+        ], cwd=checkout)
     except subprocess.CalledProcessError:
         pass
 

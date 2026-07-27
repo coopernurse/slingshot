@@ -21,7 +21,9 @@ class RepoConfig:
 @dataclass
 class AgentConfig:
     implement_command: str = "opencode run --auto {prompt_file}"
-    review_command: str = "opencode run --auto {prompt_file}"
+    review_commands: list[str] = field(
+        default_factory=lambda: ["opencode run --auto {prompt_file}"],
+    )
     implement_prompt: str | None = None
     review_prompt: str | None = None
 
@@ -35,6 +37,7 @@ class Config:
     agent_failure_threshold: int = 3
     max_concurrent: int = 2
     comment_debounce_seconds: int = 180
+    unknown_mergeable_threshold: int = 5
     agent: AgentConfig = field(default_factory=AgentConfig)
     repos: list[RepoConfig] = field(default_factory=list)
     config_dir: Path = field(default_factory=Path.cwd)
@@ -154,13 +157,22 @@ def load_config(path: str | None = None) -> Config:
         cfg.max_concurrent = int(raw["max_concurrent"])
     if "comment_debounce_seconds" in raw:
         cfg.comment_debounce_seconds = int(raw["comment_debounce_seconds"])
+    if "unknown_mergeable_threshold" in raw:
+        cfg.unknown_mergeable_threshold = int(raw["unknown_mergeable_threshold"])
 
     if "agent" in raw and isinstance(raw["agent"], dict):
         agent_raw = raw["agent"]
         if "implement_command" in agent_raw:
             cfg.agent.implement_command = str(agent_raw["implement_command"])
-        if "review_command" in agent_raw:
-            cfg.agent.review_command = str(agent_raw["review_command"])
+        if "review_commands" in agent_raw:
+            raw_cmds = agent_raw["review_commands"]
+            if isinstance(raw_cmds, list):
+                cfg.agent.review_commands = [str(c) for c in raw_cmds]
+            elif isinstance(raw_cmds, str):
+                cfg.agent.review_commands = [str(raw_cmds)]
+        elif "review_command" in agent_raw:
+            # Backward compatibility: single review_command → review_commands
+            cfg.agent.review_commands = [str(agent_raw["review_command"])]
         if "implement_prompt" in agent_raw:
             cfg.agent.implement_prompt = str(agent_raw["implement_prompt"])
         if "review_prompt" in agent_raw:
