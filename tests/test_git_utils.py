@@ -51,7 +51,11 @@ class TestWorktreePath:
 
 def _git(args: list[str], cwd: Path) -> subprocess.CompletedProcess:
     return subprocess.run(
-        ["git", *args], cwd=cwd, check=True, capture_output=True, text=True,
+        ["git", *args],
+        cwd=cwd,
+        check=True,
+        capture_output=True,
+        text=True,
     )
 
 
@@ -90,13 +94,15 @@ def checkout_with_remote_branch(tmp_path, monkeypatch):
 
 class TestCreateWorktreeFromRemote:
     def test_worktree_is_on_local_branch_not_detached(
-        self, checkout_with_remote_branch,
+        self,
+        checkout_with_remote_branch,
     ):
         checkout, _origin = checkout_with_remote_branch
         wt = git_utils.create_worktree_from_remote(checkout, 42)
 
         branch = _git(
-            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=wt,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=wt,
         ).stdout.strip()
         assert branch == "slingshot/42"
         assert (wt / "feature.txt").exists()
@@ -121,7 +127,8 @@ class TestCreateWorktreeFromRemote:
 
         local_sha = _git(["rev-parse", "HEAD"], cwd=wt).stdout.strip()
         remote_sha = _git(
-            ["rev-parse", "slingshot/42"], cwd=origin,
+            ["rev-parse", "slingshot/42"],
+            cwd=origin,
         ).stdout.strip()
         assert local_sha == remote_sha
 
@@ -137,6 +144,7 @@ class TestCreateWorktreeFromRemote:
         wt2 = git_utils.create_worktree_from_remote(checkout, 42)
         assert (wt2 / "more.txt").exists()
         branch = _git(
-            ["rev-parse", "--abbrev-ref", "HEAD"], cwd=wt2,
+            ["rev-parse", "--abbrev-ref", "HEAD"],
+            cwd=wt2,
         ).stdout.strip()
         assert branch == "slingshot/42"

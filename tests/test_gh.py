@@ -24,6 +24,7 @@ def _run_mock(return_data):
             returncode = 0
             stdout = stdout_val
             stderr = ""
+
         return Result()
 
     return _mock_run

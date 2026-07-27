@@ -7,7 +7,8 @@ from pathlib import Path
 
 
 def _run(
-    args: list[str], *,
+    args: list[str],
+    *,
     cwd: str | Path | None = None,
     capture: bool = True,
 ) -> subprocess.CompletedProcess:
@@ -48,8 +49,9 @@ def remote_branch_exists(checkout: Path, branch: str) -> bool:
 def branch_last_commit_epoch(checkout: Path, branch: str) -> int | None:
     """Return committer-date (epoch seconds) of origin/<branch> tip, or None."""
     try:
-        result = _run(["git", "log", "-1", "--format=%ct", f"origin/{branch}"],
-                      cwd=checkout)
+        result = _run(
+            ["git", "log", "-1", "--format=%ct", f"origin/{branch}"], cwd=checkout
+        )
         return int(result.stdout.strip())
     except (subprocess.CalledProcessError, ValueError):
         return None
@@ -97,10 +99,19 @@ def create_worktree(checkout: Path, issue_num: int, base: str) -> Path:
     # never pushed (e.g. empty-diff).  If the branch had been pushed,
     # remote_branch_exists would have routed us to resume/rework.
     _delete_branch_if_exists(checkout, branch)
-    _run([
-        "git", "worktree", "add", str(wt_path),
-        "-b", branch, f"origin/{base}",
-    ], cwd=checkout, capture=False)
+    _run(
+        [
+            "git",
+            "worktree",
+            "add",
+            str(wt_path),
+            "-b",
+            branch,
+            f"origin/{base}",
+        ],
+        cwd=checkout,
+        capture=False,
+    )
     return wt_path
 
 
@@ -118,10 +129,20 @@ def create_worktree_from_remote(checkout: Path, issue_num: int) -> Path:
     # Create a local branch tracking the remote one.  Passing
     # `origin/<branch>` alone would leave the worktree on a detached
     # HEAD, and `push_branch` would have no branch name to push.
-    _run([
-        "git", "worktree", "add", str(wt_path),
-        "--track", "-b", branch, f"origin/{branch}",
-    ], cwd=checkout, capture=False)
+    _run(
+        [
+            "git",
+            "worktree",
+            "add",
+            str(wt_path),
+            "--track",
+            "-b",
+            branch,
+            f"origin/{branch}",
+        ],
+        cwd=checkout,
+        capture=False,
+    )
     return wt_path
 
 
@@ -160,7 +181,8 @@ def commit_changes(worktree: Path, message: str) -> None:
 def push_branch(worktree: Path) -> None:
     """Push the current branch to origin and set upstream."""
     branch_name = _run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree,
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree,
     ).stdout.strip()
     _run(["git", "push", "-u", "origin", branch_name], cwd=worktree, capture=False)
 
@@ -171,9 +193,17 @@ def worktree_remove(checkout: Path, issue_num: int) -> None:
     if not wt_path.exists():
         return
     try:
-        _run([
-            "git", "worktree", "remove", str(wt_path), "--force",
-        ], cwd=checkout, capture=False)
+        _run(
+            [
+                "git",
+                "worktree",
+                "remove",
+                str(wt_path),
+                "--force",
+            ],
+            cwd=checkout,
+            capture=False,
+        )
     except subprocess.CalledProcessError:
         pass
 

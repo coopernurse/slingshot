@@ -21,6 +21,7 @@ def main() -> None:
 
     # ---- daemon ----
     from slingshot.daemon import register_parser
+
     register_parser(subparsers)
 
     args = parser.parse_args()
@@ -29,4 +30,5 @@ def main() -> None:
 
 def _cmd_new(args: argparse.Namespace) -> None:
     from slingshot.new_cmd import cmd_new
+
     cmd_new(spec=args.spec, repo=args.repo, title=args.title)

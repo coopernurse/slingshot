@@ -180,7 +180,9 @@ class TestImplementPromptAnchoring:
 
     def test_worktree_path_in_output(self):
         result = prompts.render_implement_prompt(
-            "spec", "fresh", worktree_path="/tmp/wt",
+            "spec",
+            "fresh",
+            worktree_path="/tmp/wt",
         )
         assert "/tmp/wt" in result
         assert "Do NOT create" in result
@@ -208,7 +210,8 @@ class TestReviewPromptAnchoring:
 class TestSynthesisPrompt:
     def test_renders_with_multiple_outputs(self):
         result = prompts.render_synthesis_prompt(
-            "spec", "main",
+            "spec",
+            "main",
             ["agent 1 output", "agent 2 output", "agent 3 output"],
         )
         assert "synthesis" in result.lower() or "tie-breaking" in result.lower()
@@ -219,14 +222,19 @@ class TestSynthesisPrompt:
 
     def test_includes_diff_instruction(self):
         result = prompts.render_synthesis_prompt(
-            "spec", "main", ["output"],
+            "spec",
+            "main",
+            ["output"],
         )
         assert "git diff" in result
         assert "origin/main...HEAD" in result
 
     def test_worktree_path_in_output(self):
         result = prompts.render_synthesis_prompt(
-            "spec", "main", ["output"], worktree_path="/tmp/wt",
+            "spec",
+            "main",
+            ["output"],
+            worktree_path="/tmp/wt",
         )
         assert "/tmp/wt" in result
         assert "Do NOT" in result
@@ -314,13 +322,19 @@ class TestImplementPromptWithItems:
     def test_items_section_in_prompt(self):
         items = [
             ReviewItem(
-                alias="S1", kind="inline", author="test-user",
-                body="/slingshot fix this", path="src/foo.py", line=42,
+                alias="S1",
+                kind="inline",
+                author="test-user",
+                body="/slingshot fix this",
+                path="src/foo.py",
+                line=42,
                 url="https://github.com/o/r/pull/1#discussion_r1",
             ),
         ]
         result = prompts.render_implement_prompt(
-            "spec", "rework", items=items,
+            "spec",
+            "rework",
+            items=items,
         )
         assert "Human Review Items" in result
         assert "S1" in result
@@ -334,43 +348,60 @@ class TestImplementPromptWithItems:
 
     def test_conflict_wording(self):
         result = prompts.render_implement_prompt(
-            "spec", "rework", is_conflicting=True,
+            "spec",
+            "rework",
+            is_conflicting=True,
         )
         assert "Merge Conflicts" in result
         assert "merge" in result.lower()
 
     def test_conflict_suppresses_feedback(self):
         result = prompts.render_implement_prompt(
-            "spec", "rework", feedback="some feedback", is_conflicting=True,
+            "spec",
+            "rework",
+            feedback="some feedback",
+            is_conflicting=True,
         )
         assert "Merge Conflicts" in result
         assert "some feedback" not in result
 
     def test_disposition_contract_in_prompt(self):
         items = [
-            ReviewItem(alias="S1", kind="inline", author="u",
-                       body="/slingshot x",
-                       url="https://github.com/o/r/pull/1"),
+            ReviewItem(
+                alias="S1",
+                kind="inline",
+                author="u",
+                body="/slingshot x",
+                url="https://github.com/o/r/pull/1",
+            ),
         ]
         result = prompts.render_implement_prompt(
-            "spec", "rework", items=items,
+            "spec",
+            "rework",
+            items=items,
         )
         assert '"items"' in result
         assert '"action"' in result
-        assert 'fixed|wontfix|unclear' in result
+        assert "fixed|wontfix|unclear" in result
 
 
 class TestReviewPromptWithItems:
     def test_addressed_unresolved_section(self):
         items = [
             ReviewItem(
-                alias="S1", kind="inline", author="user",
-                body="/slingshot fix", path="src/bar.py", line=10,
+                alias="S1",
+                kind="inline",
+                author="user",
+                body="/slingshot fix",
+                path="src/bar.py",
+                line=10,
                 url="https://github.com/o/r/pull/1",
             ),
         ]
         result = prompts.render_review_prompt(
-            "spec", "main", addressed_unresolved=items,
+            "spec",
+            "main",
+            addressed_unresolved=items,
         )
         assert "Verification Needed" in result
         assert "S1" in result
@@ -379,13 +410,19 @@ class TestReviewPromptWithItems:
     def test_resolved_section(self):
         items = [
             ReviewItem(
-                alias="S2", kind="inline", author="user",
-                body="/slingshot fixed this", path="src/baz.py", line=5,
+                alias="S2",
+                kind="inline",
+                author="user",
+                body="/slingshot fixed this",
+                path="src/baz.py",
+                line=5,
                 url="https://github.com/o/r/pull/1",
             ),
         ]
         result = prompts.render_review_prompt(
-            "spec", "main", resolved=items,
+            "spec",
+            "main",
+            resolved=items,
         )
         assert "Already Resolved" in result
         assert "S2" in result
@@ -398,8 +435,12 @@ class TestReviewPromptWithItems:
     def test_addressed_reply_body_in_section(self):
         items = [
             ReviewItem(
-                alias="S1", kind="inline", author="user",
-                body="/slingshot fix", path="src/bar.py", line=10,
+                alias="S1",
+                kind="inline",
+                author="user",
+                body="/slingshot fix",
+                path="src/bar.py",
+                line=10,
                 url="https://github.com/o/r/pull/1",
                 addressed_reply_body=(
                     "**Fixed** in `abc1234`: changed the null check\n"
@@ -408,7 +449,9 @@ class TestReviewPromptWithItems:
             ),
         ]
         result = prompts.render_review_prompt(
-            "spec", "main", addressed_unresolved=items,
+            "spec",
+            "main",
+            addressed_unresolved=items,
         )
         assert "Implementer's reply" in result
         assert "changed the null check" in result
