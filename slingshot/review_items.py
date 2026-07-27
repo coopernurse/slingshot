@@ -37,7 +37,6 @@ class ReviewItem:
     line: int | None = None
     original_line: int | None = None
     is_outdated: bool = False
-    diff_hunk: str = ""
     is_resolved: bool = False
 
     # Markers found in replies or daemon summary comment
@@ -183,7 +182,6 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
             line=tline,
             original_line=thread.get("originalLine"),
             is_outdated=thread.get("isOutdated", False),
-            diff_hunk=thread.get("diffHunk", "") or "",
             is_resolved=is_resolved,
             addressed_epoch=addr_epoch,
             disputed_epoch=disp_epoch,

@@ -333,7 +333,7 @@ class TestGraphql:
         data = {"data": {"repository": {"name": "test"}}}
         with patch("slingshot.gh.subprocess.run", _run_mock(data)):
             result = graphql("query { repository { name } }")
-        assert result == data
+        assert result == {"repository": {"name": "test"}}
 
     def test_with_variables(self):
         data = {"data": {"repository": {"id": "R_123"}}}
@@ -342,43 +342,44 @@ class TestGraphql:
                 "query($id: ID!) { node(id: $id) { id } }",
                 {"id": "R_123"},
             )
-        assert result == data
+        assert result == {"repository": {"id": "R_123"}}
 
     def test_empty_response(self):
         with patch("slingshot.gh.subprocess.run", _run_mock(None)):
             result = graphql("query { field }")
-        assert result == {}
+        assert result is None
 
 
 class TestPrReviewThreads:
     def test_full_response(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "reviewThreads": {
-                        "totalCount": 1,
-                        "nodes": [
-                            {
-                                "id": "TR_123",
-                                "isResolved": False,
-                                "isOutdated": False,
-                                "path": "src/main.py",
-                                "line": 42,
-                                "originalLine": 42,
-                                "diffHunk": "@@ -40,6 +40,7 @@",
-                                "comments": {
-                                    "nodes": [
-                                        {
-                                            "body": "/slingshot fix this",
-                                            "author": {"login": "reviewer"},
-                                            "authorAssociation": "COLLABORATOR",
-                                            "createdAt": "2024-01-01T00:00:00Z",
-                                            "updatedAt": "2024-01-02T00:00:00Z",
-                                        }
-                                    ]
-                                },
-                            }
-                        ],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "totalCount": 1,
+                            "nodes": [
+                                {
+                                    "id": "TR_123",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "path": "src/main.py",
+                                    "line": 42,
+                                    "originalLine": 42,
+                                    "comments": {
+                                        "nodes": [
+                                            {
+                                                "body": "/slingshot fix this",
+                                                "author": {"login": "reviewer"},
+                                                "authorAssociation": "COLLABORATOR",
+                                                "createdAt": "2024-01-01T00:00:00Z",
+                                                "updatedAt": "2024-01-02T00:00:00Z",
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                        }
                     }
                 }
             }
@@ -394,7 +395,6 @@ class TestPrReviewThreads:
         assert t["path"] == "src/main.py"
         assert t["line"] == 42
         assert t["originalLine"] == 42
-        assert t["diffHunk"] == "@@ -40,6 +40,7 @@"
         assert len(t["comments"]) == 1
         c = t["comments"][0]
         assert c["body"] == "/slingshot fix this"
@@ -410,14 +410,14 @@ class TestPrReviewThreads:
         assert total == 0
 
     def test_no_pull_request(self):
-        data = {"repository": {}}
+        data = {"data": {"repository": {}}}
         with patch("slingshot.gh.subprocess.run", _run_mock(data)):
             threads, total = pr_review_threads("owner/repo", 42)
         assert threads == []
         assert total == 0
 
     def test_no_review_threads(self):
-        data = {"repository": {"pullRequest": {}}}
+        data = {"data": {"repository": {"pullRequest": {}}}}
         with patch("slingshot.gh.subprocess.run", _run_mock(data)):
             threads, total = pr_review_threads("owner/repo", 42)
         assert threads == []
@@ -425,22 +425,23 @@ class TestPrReviewThreads:
 
     def test_thread_with_no_comments(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "reviewThreads": {
-                        "totalCount": 1,
-                        "nodes": [
-                            {
-                                "id": "TR_456",
-                                "isResolved": True,
-                                "isOutdated": True,
-                                "path": "src/util.py",
-                                "line": 10,
-                                "originalLine": None,
-                                "diffHunk": "",
-                                "comments": {"nodes": []},
-                            }
-                        ],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "totalCount": 1,
+                            "nodes": [
+                                {
+                                    "id": "TR_456",
+                                    "isResolved": True,
+                                    "isOutdated": True,
+                                    "path": "src/util.py",
+                                    "line": 10,
+                                    "originalLine": None,
+                                    "comments": {"nodes": []},
+                                }
+                            ],
+                        }
                     }
                 }
             }
@@ -455,11 +456,13 @@ class TestPrReviewThreads:
 
     def test_nil_thread_node(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "reviewThreads": {
-                        "totalCount": 2,
-                        "nodes": [None, None],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "totalCount": 2,
+                            "nodes": [None, None],
+                        }
                     }
                 }
             }
@@ -471,33 +474,34 @@ class TestPrReviewThreads:
 
     def test_nil_comment_node(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "reviewThreads": {
-                        "totalCount": 1,
-                        "nodes": [
-                            {
-                                "id": "TR_789",
-                                "isResolved": False,
-                                "isOutdated": False,
-                                "path": "file.py",
-                                "line": 5,
-                                "originalLine": 5,
-                                "diffHunk": "",
-                                "comments": {
-                                    "nodes": [
-                                        None,
-                                        {
-                                            "body": "ok",
-                                            "author": {"login": "user1"},
-                                            "authorAssociation": "OWNER",
-                                            "createdAt": "2024-01-01T00:00:00Z",
-                                            "updatedAt": "2024-01-01T00:00:00Z",
-                                        },
-                                    ]
-                                },
-                            }
-                        ],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "totalCount": 1,
+                            "nodes": [
+                                {
+                                    "id": "TR_789",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "path": "file.py",
+                                    "line": 5,
+                                    "originalLine": 5,
+                                    "comments": {
+                                        "nodes": [
+                                            None,
+                                            {
+                                                "body": "ok",
+                                                "author": {"login": "user1"},
+                                                "authorAssociation": "OWNER",
+                                                "createdAt": "2024-01-01T00:00:00Z",
+                                                "updatedAt": "2024-01-01T00:00:00Z",
+                                            },
+                                        ]
+                                    },
+                                }
+                            ],
+                        }
                     }
                 }
             }
@@ -510,32 +514,33 @@ class TestPrReviewThreads:
 
     def test_comment_author_is_none(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "reviewThreads": {
-                        "totalCount": 1,
-                        "nodes": [
-                            {
-                                "id": "TR_N1",
-                                "isResolved": False,
-                                "isOutdated": False,
-                                "path": "file.py",
-                                "line": 1,
-                                "originalLine": 1,
-                                "diffHunk": "",
-                                "comments": {
-                                    "nodes": [
-                                        {
-                                            "body": "comment",
-                                            "author": None,
-                                            "authorAssociation": "",
-                                            "createdAt": "",
-                                            "updatedAt": "",
-                                        }
-                                    ]
-                                },
-                            }
-                        ],
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "reviewThreads": {
+                            "totalCount": 1,
+                            "nodes": [
+                                {
+                                    "id": "TR_N1",
+                                    "isResolved": False,
+                                    "isOutdated": False,
+                                    "path": "file.py",
+                                    "line": 1,
+                                    "originalLine": 1,
+                                    "comments": {
+                                        "nodes": [
+                                            {
+                                                "body": "comment",
+                                                "author": None,
+                                                "authorAssociation": "",
+                                                "createdAt": "",
+                                                "updatedAt": "",
+                                            }
+                                        ]
+                                    },
+                                }
+                            ],
+                        }
                     }
                 }
             }
@@ -814,9 +819,11 @@ class TestIssueCommentsNormalization:
 class TestPrMergeable:
     def test_mergeable(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "mergeable": "MERGEABLE",
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "mergeable": "MERGEABLE",
+                    }
                 }
             }
         }
@@ -826,9 +833,11 @@ class TestPrMergeable:
 
     def test_conflicting(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "mergeable": "CONFLICTING",
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "mergeable": "CONFLICTING",
+                    }
                 }
             }
         }
@@ -838,9 +847,11 @@ class TestPrMergeable:
 
     def test_unknown(self):
         data = {
-            "repository": {
-                "pullRequest": {
-                    "mergeable": "UNKNOWN",
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "mergeable": "UNKNOWN",
+                    }
                 }
             }
         }
