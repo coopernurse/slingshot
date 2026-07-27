@@ -117,11 +117,13 @@ def render_implement_prompt(
     worktree_path: str | None = None,
     items: list[ReviewItem] | None = None,
     is_conflicting: bool = False,
+    custom_system_prompt: str | None = None,
 ) -> str:
     """Render the implement prompt for *scenario* (fresh/resume/rework).
 
     *items* are unaddressed /slingshot items to be addressed.
     *is_conflicting* adds merge-conflict instructions at the top.
+    *custom_system_prompt* overrides the hardcoded system prompt.
     """
     if scenario == "fresh":
         instruction = (
@@ -144,7 +146,11 @@ def render_implement_prompt(
     else:
         raise ValueError(f"Unknown scenario: {scenario}")
 
-    parts = [IMPLEMENT_SYSTEM, "", "## Instructions", "", instruction, ""]
+    system = (
+        custom_system_prompt if custom_system_prompt is not None
+        else IMPLEMENT_SYSTEM
+    )
+    parts = [system, "", "## Instructions", "", instruction, ""]
 
     if worktree_path:
         parts.extend([
@@ -193,6 +199,7 @@ def render_review_prompt(
     worktree_path: str | None = None,
     addressed_unresolved: list[ReviewItem] | None = None,
     resolved: list[ReviewItem] | None = None,
+    custom_system_prompt: str | None = None,
 ) -> str:
     """Render the review prompt.
 
@@ -201,8 +208,12 @@ def render_review_prompt(
     *addressed_unresolved* are items the implementer claimed to have fixed
     but the human hasn't resolved yet (verification needed).
     *resolved* are items the human already resolved (informational only).
+    *custom_system_prompt* overrides the hardcoded system prompt.
     """
-    system = REVIEW_SYSTEM.format(default_branch=default_branch)
+    if custom_system_prompt is not None:
+        system = custom_system_prompt
+    else:
+        system = REVIEW_SYSTEM.format(default_branch=default_branch)
     parts = [
         system, "",
         "## Instructions",

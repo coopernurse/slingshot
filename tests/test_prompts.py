@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from slingshot import prompts
+from slingshot.prompts import IMPLEMENT_SYSTEM, REVIEW_SYSTEM
 from slingshot.review_items import ReviewItem
 
 
@@ -367,3 +368,102 @@ class TestFormatFailSummaryWithHumanItems:
         assert "S3" in result
         assert "still broken" in result
         assert "Human Review Items" in result
+
+
+class TestCustomSystemPrompt:
+    CUSTOM = "You are a custom agent. Repo: {repo_name}, issue: {issue_number}."
+
+    def test_implement_uses_custom_prompt(self):
+        result = prompts.render_implement_prompt(
+            "spec body", "fresh",
+            custom_system_prompt=self.CUSTOM.format(
+                repo_name="o/r", issue_number=42,
+            ),
+        )
+        assert "You are a custom agent. Repo: o/r, issue: 42." in result
+        assert IMPLEMENT_SYSTEM.splitlines()[0] not in result
+
+    def test_implement_falls_back_to_default(self):
+        result = prompts.render_implement_prompt("spec body", "fresh")
+        assert IMPLEMENT_SYSTEM.splitlines()[0] in result
+        assert "custom agent" not in result
+
+    def test_review_uses_custom_prompt(self):
+        result = prompts.render_review_prompt(
+            "spec body", "main",
+            custom_system_prompt=self.CUSTOM.format(
+                repo_name="o/r", issue_number=42,
+            ),
+        )
+        assert "You are a custom agent. Repo: o/r, issue: 42." in result
+        assert REVIEW_SYSTEM.splitlines()[0] not in result
+
+    def test_review_falls_back_to_default(self):
+        result = prompts.render_review_prompt("spec body", "main")
+        assert REVIEW_SYSTEM.splitlines()[0] in result
+        assert "custom agent" not in result
+
+    def test_custom_prompt_still_appends_dynamic_sections(self):
+        result = prompts.render_implement_prompt(
+            "spec body", "fresh",
+            custom_system_prompt="Custom header.",
+            worktree_path="/tmp/wt",
+        )
+        assert "Custom header." in result
+        assert "## Instructions" in result
+        assert "## Specification" in result
+        assert "## Output" in result
+        assert "spec body" in result
+        assert "/tmp/wt" in result
+
+    def test_custom_review_still_appends_dynamic_sections(self):
+        result = prompts.render_review_prompt(
+            "spec body", "main",
+            custom_system_prompt="Custom header.",
+            worktree_path="/tmp/wt",
+        )
+        assert "Custom header." in result
+        assert "## Instructions" in result
+        assert "## Specification" in result
+        assert "spec body" in result
+        assert "/tmp/wt" in result
+
+    def test_custom_none_same_as_default(self):
+        default_result = prompts.render_implement_prompt("spec body", "fresh")
+        none_result = prompts.render_implement_prompt(
+            "spec body", "fresh", custom_system_prompt=None,
+        )
+        assert default_result == none_result
+
+    def test_custom_implement_with_items(self):
+        items = [
+            ReviewItem(
+                alias="S1", kind="inline", author="test-user",
+                body="/slingshot fix this", path="src/foo.py", line=42,
+                url="https://github.com/o/r/pull/1#discussion_r1",
+            ),
+        ]
+        result = prompts.render_implement_prompt(
+            "spec body", "rework", items=items,
+            custom_system_prompt="Custom system prompt.",
+        )
+        assert "Custom system prompt." in result
+        assert "Human Review Items" in result
+        assert "S1" in result
+
+    def test_custom_review_with_items(self):
+        items = [
+            ReviewItem(
+                alias="S1", kind="inline", author="user",
+                body="/slingshot fix", path="src/bar.py", line=10,
+                url="https://github.com/o/r/pull/1",
+            ),
+        ]
+        result = prompts.render_review_prompt(
+            "spec body", "main",
+            custom_system_prompt="Custom system prompt.",
+            addressed_unresolved=items,
+        )
+        assert "Custom system prompt." in result
+        assert "Verification Needed" in result
+        assert "S1" in result

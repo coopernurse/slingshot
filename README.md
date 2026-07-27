@@ -86,6 +86,8 @@ agent_timeout_minutes   = 30    # per-run agent kill switch
 review_fail_threshold   = 5     # fail-marker count on PR → blocked
 agent_failure_threshold = 3     # consecutive failures on issue → blocked
 max_concurrent          = 2     # simultaneous agent runs across all repos
+comment_debounce_seconds = 180  # seconds before a qualifying comment
+                                # triggers a bounce (prevents rapid-fire)
 
 [agent]
 implement_command = "opencode run {prompt_file}"
@@ -148,6 +150,66 @@ review_command    = "claude --print {prompt_file}"
 | `--variant variant` | Provider-specific reasoning effort |
 | `--auto` | Auto-approve permissions |
 | `--thinking` | Include thinking blocks in output |
+
+### Custom prompt overrides
+
+You can override the built-in system prompts with custom markdown files. This
+lets you tune the agent's instructions without changing slingshot's source code.
+
+```toml
+[agent]
+implement_prompt = "/path/to/implement.md"   # optional
+review_prompt    = "/path/to/review.md"       # optional
+
+[[repo]]
+name    = "owner/name"
+path    = "/Users/you/src/name"
+implement_prompt = "/path/to/per-repo-impl.md"  # optional, overrides global
+review_prompt    = "/path/to/per-repo-rev.md"    # optional, overrides global
+```
+
+Relative paths are resolved against the config file's directory.
+
+#### Precedence
+
+```
+per-repo prompt path → global [agent] prompt path → hardcoded constant
+```
+
+#### Token substitution
+
+Custom prompt files support `.format()`-style token substitution. The following
+tokens are replaced at runtime:
+
+| Token | Implement | Review | Description |
+|---|---|---|---|
+| `{default_branch}` | Yes | Yes | e.g. `main` |
+| `{repo_name}` | Yes | Yes | e.g. `owner/repo` |
+| `{issue_number}` | Yes | Yes | GitHub issue number |
+| `{spec}` | Yes | Yes | Full issue body |
+| `{scenario}` | Yes | — | `"fresh"` / `"resume"` / `"rework"` (empty on review) |
+| `{feedback}` | Yes | — | Reviewer notes (empty on non-rework) |
+| `{worktree_path}` | Yes | Yes | Absolute path to worktree |
+
+Literal `{` and `}` must be escaped as `{{` and `}}`.
+
+The custom prompt replaces only the **system prompt** portion. Dynamic context
+(spec body, scenario instructions, feedback, worktree path) is appended below
+in the same structure used by the built-in prompts.
+
+#### Validation
+
+Prompt paths are validated at daemon startup. If any path is missing or
+unreadable, all failures are reported at once and the daemon exits.  Fields
+left unset (no override) skip validation — the hardcoded default is used.
+
+When a custom prompt is active, the archived prompt copy in
+`.slingshot/prompts/` includes a breadcrumb comment identifying the source
+file:
+
+```
+<!-- Custom system prompt sourced from: /path/to/file.md -->
+```
 
 ## Usage
 

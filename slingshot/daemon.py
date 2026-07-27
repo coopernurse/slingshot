@@ -19,7 +19,7 @@ from datetime import UTC, datetime
 from slingshot import gh, prompts, review_items, state
 from slingshot import git_utils as git
 from slingshot import logging as log
-from slingshot.config import Config, RepoConfig
+from slingshot.config import Config, RepoConfig, resolve_prompt_path
 from slingshot.prompts import CI_FAIL_MARKER, REVIEW_FAIL_MARKER
 from slingshot.review_items import ADDRESSED_MARKER
 
@@ -690,11 +690,27 @@ class Daemon:
 
         main_before = git.has_changes(ws.repo.path)
 
+        custom_system, custom_source = _load_custom_prompt(
+            ws.repo, self.config, is_implement=True,
+            default_branch=self._default_branch_for(ws.repo),
+            repo_name=ws.repo.name,
+            issue_number=issue_num,
+            spec=spec,
+            scenario=scenario,
+            feedback=feedback or "",
+            worktree_path=str(worktree),
+        )
         prompt = prompts.render_implement_prompt(
             spec, scenario, feedback, worktree_path=str(worktree),
             items=implement_items if implement_items else None,
             is_conflicting=is_conflicting,
+            custom_system_prompt=custom_system,
         )
+        if custom_source is not None:
+            breadcrumb = (
+                f"<!-- Custom system prompt sourced from: {custom_source} -->"
+            )
+            prompt = f"{breadcrumb}\n{prompt}"
         prompt_dir = worktree / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = prompt_dir / f"{issue_num}-implement.md"
@@ -860,12 +876,28 @@ class Daemon:
 
         main_before = git.has_changes(ws.repo.path)
 
+        custom_system, custom_source = _load_custom_prompt(
+            ws.repo, self.config, is_implement=False,
+            default_branch=default_branch,
+            repo_name=ws.repo.name,
+            issue_number=issue_num,
+            spec=spec,
+            scenario="",
+            feedback="",
+            worktree_path=str(worktree),
+        )
         prompt = prompts.render_review_prompt(
             spec, default_branch, worktree_path=str(worktree),
             addressed_unresolved=addressed_unresolved if addressed_unresolved
             else None,
             resolved=resolved if resolved else None,
+            custom_system_prompt=custom_system,
         )
+        if custom_source is not None:
+            breadcrumb = (
+                f"<!-- Custom system prompt sourced from: {custom_source} -->"
+            )
+            prompt = f"{breadcrumb}\n{prompt}"
         prompt_dir = worktree / ".slingshot" / "prompts"
         prompt_dir.mkdir(parents=True, exist_ok=True)
         prompt_file = prompt_dir / f"{issue_num}-review.md"
@@ -1296,6 +1328,66 @@ _OPENCODE_CONFIG_CONTENT = json.dumps({
 # the agent. Kept small so a deadline that passes while the machine is
 # asleep is enforced soon after wake.
 _TIMEOUT_CHECK_SECONDS = 30
+
+
+def _resolve_effective_prompt_path(
+    repo: RepoConfig, config: Config, *, is_implement: bool,
+) -> str | None:
+    """Return the effective custom prompt path (string), or None.
+
+    Precedence: per-repo → global [agent] → None.
+    """
+    if is_implement:
+        if repo.implement_prompt:
+            return repo.implement_prompt
+        if config.agent.implement_prompt:
+            return config.agent.implement_prompt
+    else:
+        if repo.review_prompt:
+            return repo.review_prompt
+        if config.agent.review_prompt:
+            return config.agent.review_prompt
+    return None
+
+
+def _load_custom_prompt(
+    repo: RepoConfig,
+    config: Config,
+    *,
+    is_implement: bool,
+    default_branch: str,
+    repo_name: str,
+    issue_number: int,
+    spec: str,
+    scenario: str,
+    feedback: str,
+    worktree_path: str,
+) -> tuple[str | None, str | None]:
+    """Load and format a custom system prompt.
+
+    Returns (formatted_prompt, source_path_str) or (None, None) if no
+    custom prompt is configured.
+    """
+    path_str = _resolve_effective_prompt_path(
+        repo, config, is_implement=is_implement,
+    )
+    if path_str is None:
+        return None, None
+
+    resolved = resolve_prompt_path(path_str, config.config_dir)
+    raw = resolved.read_text()
+
+    tokens = {
+        "default_branch": default_branch,
+        "repo_name": repo_name,
+        "issue_number": issue_number,
+        "spec": spec,
+        "scenario": scenario,
+        "feedback": feedback,
+        "worktree_path": worktree_path,
+    }
+    formatted = raw.format(**tokens)
+    return formatted, path_str
 
 
 def _run_agent(
