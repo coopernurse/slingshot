@@ -151,6 +151,39 @@ def has_changes(worktree: Path) -> bool:
         return False
 
 
+def has_unpushed_commits(worktree: Path) -> bool:
+    """Return True if the current branch has commits not yet pushed to remote."""
+    try:
+        result = _run(
+            ["git", "log", "--oneline", "@{u}..HEAD"],
+            cwd=worktree,
+        )
+        return bool(result.stdout.strip())
+    except subprocess.CalledProcessError:
+        return False
+
+
+def worktree_status(worktree: Path) -> str:
+    """Return a diagnostic snapshot of the worktree: status, log, branch info."""
+    lines: list[str] = []
+    try:
+        r = _run(["git", "status", "--porcelain"], cwd=worktree)
+        lines.append(f"git status --porcelain: {r.stdout.strip() or '(clean)'}")
+    except Exception as exc:
+        lines.append(f"git status --porcelain: ERROR {exc}")
+    try:
+        r = _run(["git", "log", "--oneline", "-5"], cwd=worktree)
+        lines.append(f"git log --oneline -5:{chr(10)}{r.stdout.strip()}")
+    except Exception as exc:
+        lines.append(f"git log --oneline -5: ERROR {exc}")
+    try:
+        r = _run(["git", "branch", "-v"], cwd=worktree)
+        lines.append(f"git branch -v:{chr(10)}{r.stdout.strip()}")
+    except Exception as exc:
+        lines.append(f"git branch -v: ERROR {exc}")
+    return "\n".join(lines)
+
+
 def commit_changes(worktree: Path, message: str) -> None:
     """Add all changes and commit."""
     _run(["git", "add", "-A"], cwd=worktree, capture=False)

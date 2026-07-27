@@ -492,6 +492,25 @@ class Daemon:
 
             self._handle_ci_failure(repo, issue_num, pr_num, sha, failing)
 
+    def _post_ci_fail_comment(
+        self, repo_name: str, pr_num: int, sha: str, failing_checks: list[dict],
+    ) -> None:
+        short_sha = sha[:7] if sha else "unknown"
+        urls = [f"- [{c['name']}]({c['url']})" if c.get("url") else f"- {c['name']}"
+                for c in failing_checks]
+        check_list = "\n".join(urls)
+        body = (
+            f"{CI_FAIL_MARKER}\n"
+            f"**CI Failure** on `{short_sha}`\n\n"
+            f"Failing checks:\n{check_list}\n\n"
+            f"Run `gh run view --repo {repo_name} --log-failed`"
+            f" to view logs."
+        )
+        try:
+            gh.pr_comment_create(repo_name, pr_num, body)
+        except Exception:
+            pass
+
     def _handle_ci_failure(
         self, repo: RepoConfig, issue_num: int, pr_num: int,
         sha: str, failing_checks: list[dict],
@@ -692,7 +711,7 @@ class Daemon:
                         if epoch is not None and epoch < last_push:
                             continue
                     fail_comments.append(body)
-                if fail_comments or implement_items:
+                if fail_comments or implement_items or is_conflicting:
                     scenario = "rework"
                     if fail_comments:
                         feedback = "\n\n---\n\n".join(fail_comments)
@@ -789,7 +808,10 @@ class Daemon:
                 )
                 return elapsed
 
-        if exit_code != 0 or not git.has_changes(worktree):
+        if exit_code != 0 or (
+            not git.has_changes(worktree)
+            and not git.has_unpushed_commits(worktree)
+        ):
             reason = f"exit={exit_code}" if exit_code != 0 else "empty-diff"
             if output:
                 tail = _tail(output, 50)
@@ -797,6 +819,15 @@ class Daemon:
                     f"repo={ws.repo.name} issue={issue_num} "
                     f"event=agent-output tail=\n{tail}"
                 )
+            # Log worktree state for diagnosis
+            try:
+                status = git.worktree_status(worktree)
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=worktree-snapshot reason={reason}\n{status}"
+                )
+            except Exception:
+                pass
             log.log_agent_failure(ws.repo.name, issue_num, "implement", reason)
             self._handle_agent_failure(ws, ws.flight_label, reason)
             return elapsed
@@ -805,11 +836,14 @@ class Daemon:
         if len(commit_msg) > 72:
             commit_msg = commit_msg[:69] + "..."
 
-        try:
-            git.commit_changes(worktree, commit_msg)
-        except subprocess.CalledProcessError:
-            self._handle_agent_failure(ws, ws.flight_label, "commit-failed")
-            return elapsed
+        if git.has_changes(worktree):
+            try:
+                git.commit_changes(worktree, commit_msg)
+            except subprocess.CalledProcessError:
+                self._handle_agent_failure(
+                    ws, ws.flight_label, "commit-failed",
+                )
+                return elapsed
 
         try:
             git.push_branch(worktree)
@@ -889,6 +923,21 @@ class Daemon:
                 ws.repo, issue_num, ws.flight_label, "slingshot:implement",
             )
             return 0.0
+
+        # --- Review-pass gate: check for merge conflicts ----------------
+        try:
+            mergeable = gh.pr_mergeable(ws.repo.name, pr_num)
+            if mergeable == "CONFLICTING":
+                log.log(
+                    f"repo={ws.repo.name} issue={issue_num} "
+                    f"event=review-gate-bounce reason=merge-conflict"
+                )
+                self._transition_label(
+                    ws.repo, issue_num, ws.flight_label, "slingshot:implement",
+                )
+                return 0.0
+        except Exception:
+            pass
 
         # --- Run the review agent ---------------------------------------
 
@@ -998,6 +1047,11 @@ class Daemon:
                 return elapsed
 
             if any(c["failed"] for c in cks2) or m2 == "CONFLICTING":
+                if any(c["failed"] for c in cks2):
+                    self._post_ci_fail_comment(
+                        ws.repo.name, pr_num, checks2.get("sha", ""),
+                        [c for c in cks2 if c.get("failed")],
+                    )
                 self._transition_label(
                     ws.repo, issue_num, ws.flight_label, "slingshot:implement",
                 )
