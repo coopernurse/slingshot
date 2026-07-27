@@ -29,7 +29,7 @@ def cmd_new(*, spec: str, repo: str, title: str | None) -> None:
             )
             sys.exit(1)
 
-    _ensure_slingshot_labels(repo)
+    gh.ensure_labels(repo, state.SLINGSHOT_LABELS)
 
     issue = gh.issue_create(
         repo=repo,
@@ -49,9 +49,4 @@ def _extract_title(text: str) -> str | None:
     return None
 
 
-def _ensure_slingshot_labels(repo: str) -> None:
-    """Create any slingshot:* labels that don't exist in the repo."""
-    existing = set(gh.label_list(repo))
-    for label in state.SLINGSHOT_LABELS:
-        if label not in existing:
-            gh.label_create(repo, label)
+

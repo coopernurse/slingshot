@@ -210,6 +210,13 @@ def label_create(repo: str, name: str, color: str = "0366d6") -> None:
         pass  # already exists or permission denied
 
 
+def ensure_labels(repo: str, labels: list[str]) -> None:
+    existing = set(label_list(repo))
+    for label in labels:
+        if label not in existing:
+            label_create(repo, label)
+
+
 # ---------------------------------------------------------------------------
 # Review threads (GraphQL) and mergeable check
 # ---------------------------------------------------------------------------
