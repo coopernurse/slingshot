@@ -88,6 +88,7 @@ class Daemon:
         log.log(f"event=start daemon={self.daemon_id}")
 
         for repo in self.config.repos:
+            gh.ensure_labels(repo.name, state.SLINGSHOT_LABELS)
             git.prune_orphan_worktrees(repo.path, self._protected_issue_nums(repo))
 
         while not self._stop.is_set():
@@ -1209,6 +1210,8 @@ class Daemon:
     ) -> None:
         remove = [from_state] if from_state else []
         add = [to_state] if to_state else []
+        if to_state:
+            gh.ensure_labels(repo.name, [to_state])
         try:
             gh.issue_edit_labels(
                 repo.name, issue_num, add_labels=add, remove_labels=remove,
