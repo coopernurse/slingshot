@@ -33,7 +33,7 @@ class WorkerState:
     __slots__ = (
         "repo", "issue_num", "issue_title", "issue_body",
         "phase", "thread", "start_time",
-        "proc", "aborted", "_review_procs",
+        "proc", "aborted", "_review_procs", "_review_procs_lock",
     )
 
     def __init__(
@@ -49,6 +49,7 @@ class WorkerState:
         self.proc: subprocess.Popen | None = None
         self.aborted = False
         self._review_procs: list[subprocess.Popen] = []
+        self._review_procs_lock = threading.Lock()
 
     def key(self) -> str:
         return f"{self.repo.name}/{self.issue_num}/{self.phase}"
@@ -202,7 +203,9 @@ class Daemon:
             except subprocess.TimeoutExpired:
                 ws.proc.kill()
                 ws.proc.wait()
-        for p in ws._review_procs:
+        with ws._review_procs_lock:
+            procs_snapshot = list(ws._review_procs)
+        for p in procs_snapshot:
             if p.poll() is None:
                 p.terminate()
                 try:
@@ -210,7 +213,8 @@ class Daemon:
                 except subprocess.TimeoutExpired:
                     p.kill()
                     p.wait()
-        ws._review_procs.clear()
+        with ws._review_procs_lock:
+            ws._review_procs.clear()
         if reason != "label-mismatch":
             try:
                 issue = gh.issue_get(ws.repo.name, ws.issue_num)
@@ -1047,11 +1051,15 @@ class Daemon:
             gh.pr_comment_create(ws.repo.name, pr_num, summary)
 
             # Post disputed markers for unsolved human items
+            try:
+                all_items, _ = review_items.fetch_items(ws.repo.name, pr_num)
+            except Exception:
+                all_items = []
             human_items = verdict_data.get("human_items")
             if isinstance(human_items, dict) and human_items.get("status") == "fail":
                 unsolved = human_items.get("unsolved", [])
                 self._post_disputed_replies(ws.repo.name, pr_num, unsolved,
-                                           all_items)
+                                            all_items)
 
             comments = gh.pr_comments(ws.repo.name, pr_num)
             fail_count = sum(
@@ -1081,7 +1089,7 @@ class Daemon:
         prompt_dir = worktree / ".slingshot" / "prompts"
 
         all_procs: list[subprocess.Popen] = []
-        procs_lock = threading.Lock()
+        procs_lock = ws._review_procs_lock
         failed = threading.Event()
 
         def _run_one(cmd: str, cwd: str) -> tuple[int, str]:

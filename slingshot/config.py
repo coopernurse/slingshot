@@ -80,6 +80,9 @@ def load_config(path: str | None = None) -> Config:
                 cfg.agent.review_commands = [str(c) for c in raw_cmds]
             elif isinstance(raw_cmds, str):
                 cfg.agent.review_commands = [str(raw_cmds)]
+        elif "review_command" in agent_raw:
+            # Backward compatibility: single review_command → review_commands
+            cfg.agent.review_commands = [str(agent_raw["review_command"])]
 
     if "repo" in raw and isinstance(raw["repo"], list):
         for entry in raw["repo"]:
