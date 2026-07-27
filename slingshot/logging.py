@@ -5,6 +5,13 @@ from __future__ import annotations
 import json
 from datetime import datetime
 
+_verbose: bool = False
+
+
+def set_verbose(verbose: bool) -> None:
+    global _verbose
+    _verbose = verbose
+
 
 def log(msg: str) -> None:
     """Write a timestamped log line to stdout."""
@@ -15,6 +22,8 @@ def log(msg: str) -> None:
 
 def log_cmd_output(cmd: list[str], stdout: str, stderr: str) -> None:
     """Emit captured child-process output as structured log lines."""
+    if not _verbose:
+        return
     cmd_label = " ".join(cmd[:2])
     for stream_name, text in [("stdout", stdout), ("stderr", stderr)]:
         if not text:
