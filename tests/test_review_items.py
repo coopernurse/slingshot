@@ -261,7 +261,6 @@ class TestFetchItems:
             "path": "src/foo.py",
             "line": 42,
             "originalLine": None,
-            "diffHunk": "@@ -40,6 +40,8 @@",
             "comments": [{
                 "body": "/slingshot fix this",
                 "author": "trusted",

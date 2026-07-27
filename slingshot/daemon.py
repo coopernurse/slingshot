@@ -76,6 +76,7 @@ class Daemon:
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._debounce: dict[str, float] = {}
+        self._unknown_mergeable: dict[str, int] = {}
 
         signal.signal(signal.SIGINT, self._handle_signal)
         signal.signal(signal.SIGTERM, self._handle_signal)
@@ -230,6 +231,11 @@ class Daemon:
                     repo.name, f"slingshot/{issue_num}", state="all",
                 )
                 if not prs:
+                    if watch_state == state.AWAITING_CHECKS:
+                        log.log(
+                            f"repo={repo.name} issue={issue_num} "
+                            f"event=awaiting-checks-no-pr state={watch_state}"
+                        )
                     continue
                 pr = prs[0]
                 if pr.get("mergedAt") or (pr.get("state") or "").upper() in (
@@ -291,7 +297,12 @@ class Daemon:
             checks_status = gh.pr_check_status(repo.name, pr_num)
             mergeable = gh.pr_mergeable(repo.name, pr_num)
             all_items, _ = review_items.fetch_items(repo.name, pr_num)
-        except Exception:
+        except Exception as exc:
+            log.log(
+                f"repo={repo.name} issue={issue_num} "
+                f"event=awaiting-checks-error pr={pr_num} "
+                f"error={exc}"
+            )
             return
 
         qualified = review_items.qualifying(all_items, self._daemon_login())
@@ -307,6 +318,7 @@ class Daemon:
                     f"event=items-bounce from={state.AWAITING_CHECKS} "
                     f"count={len(unaddressed)} debounce={debounce_secs}s"
                 )
+                self._unknown_mergeable.pop(f"{repo.name}/{issue_num}", None)
                 self._transition_label(
                     repo, issue_num, state.AWAITING_CHECKS, "slingshot:implement",
                 )
@@ -317,7 +329,32 @@ class Daemon:
         failing = any(c["failed"] for c in checks)
 
         if pending or mergeable == "UNKNOWN" or mergeable is None:
+            if mergeable == "UNKNOWN" or mergeable is None:
+                key = f"{repo.name}/{issue_num}"
+                count = self._unknown_mergeable.get(key, 0) + 1
+                self._unknown_mergeable[key] = count
+                log.log(
+                    f"repo={repo.name} issue={issue_num} "
+                    f"event=mergeable-unknown pr={pr_num} "
+                    f"mergeable={mergeable!r} count={count}"
+                )
+                threshold = self.config.unknown_mergeable_threshold
+                if count >= threshold:
+                    self._unknown_mergeable.pop(key, None)
+                    log.log(
+                        f"repo={repo.name} issue={issue_num} "
+                        f"event=mergeable-unknown-bail pr={pr_num} "
+                        f"count={count} threshold={threshold}"
+                    )
+                    self._transition_label(
+                        repo, issue_num, state.AWAITING_CHECKS,
+                        "slingshot:implement",
+                    )
+                return
             return
+
+        # mergeable is known (MERGEABLE or CONFLICTING) — clear counter
+        self._unknown_mergeable.pop(f"{repo.name}/{issue_num}", None)
 
         if failing or mergeable == "CONFLICTING":
             self._transition_label(

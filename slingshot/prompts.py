@@ -84,8 +84,6 @@ def _format_item_block(item: ReviewItem) -> str:
         if item.is_outdated:
             loc += " [OUTDATED]"
         lines.append(f"  Location: {loc}")
-    if item.diff_hunk:
-        lines.append(f"  Diff hunk:\n```diff\n{item.diff_hunk}\n```")
     lines.append(f"  Body:\n> {item.body}")
     if item.addressed_reply_body:
         # Strip hidden markers for cleaner prompt rendering

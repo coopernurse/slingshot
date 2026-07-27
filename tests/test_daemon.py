@@ -801,6 +801,148 @@ class TestAwaitingChecks:
             repo, 1, "slingshot:awaiting-checks", "slingshot:implement",
         )
 
+    def test_unknown_mergeable_no_transition_below_threshold(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="UNKNOWN"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_not_called()
+        assert daemon._unknown_mergeable.get("test/repo/1") == 2
+
+    def test_unknown_mergeable_bails_after_threshold(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo], unknown_mergeable_threshold=3)
+        daemon = Daemon(cfg)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="UNKNOWN"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+            daemon._check_awaiting_checks(repo, 1, 10)
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:awaiting-checks", "slingshot:implement",
+        )
+        assert "test/repo/1" not in daemon._unknown_mergeable
+
+    def test_none_mergeable_bails_after_threshold(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo], unknown_mergeable_threshold=3)
+        daemon = Daemon(cfg)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value=None), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+            daemon._check_awaiting_checks(repo, 1, 10)
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:awaiting-checks", "slingshot:implement",
+        )
+
+    def test_counter_cleared_when_mergeable_becomes_known(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        # First call: UNKNOWN (increments counter)
+        with patch.object(daemon, "_transition_label"), \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="UNKNOWN"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        assert daemon._unknown_mergeable.get("test/repo/1") == 1
+
+        # Second call: CONFLICTING (clears counter, transitions to implement)
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [
+                     {"name": "ci", "completed": True, "failed": False, "url": ""},
+                 ],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="CONFLICTING"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_called_once_with(
+            repo, 1, "slingshot:awaiting-checks", "slingshot:implement",
+        )
+        assert "test/repo/1" not in daemon._unknown_mergeable
+
+    def test_pending_with_known_mergeable_does_not_count(self):
+        repo = _make_repo()
+        cfg = Config(repos=[repo])
+        daemon = Daemon(cfg)
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_check_status", return_value={
+                 "sha": "abc", "checks": [
+                     {"name": "ci", "completed": False, "failed": False, "url": ""},
+                 ],
+             }), \
+             patch("slingshot.daemon.gh.pr_mergeable",
+                   return_value="MERGEABLE"), \
+             patch("slingshot.daemon.review_items.fetch_items",
+                   return_value=([], [])), \
+             patch("slingshot.daemon.review_items.qualifying",
+                   return_value=[]), \
+             patch("slingshot.daemon.review_items.partition",
+                   return_value=([], [], [])):
+            daemon._check_awaiting_checks(repo, 1, 10)
+
+        mock_tx.assert_not_called()
+        assert daemon._unknown_mergeable.get("test/repo/1", 0) == 0
+
 
 class TestBlockedUnblock:
     def test_unblocks_when_new_items_exist(self):

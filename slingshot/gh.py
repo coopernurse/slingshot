@@ -223,12 +223,21 @@ def ensure_labels(repo: str, labels: list[str]) -> None:
 
 
 def graphql(query: str, variables: dict | None = None) -> dict | None:
-    """Run a GraphQL query via ``gh api graphql``."""
+    """Run a GraphQL query via ``gh api graphql``.
+
+    Returns the ``data`` portion of the GraphQL response, or None on error.
+    """
     args = ["gh", "api", "graphql", "-f", f"query={query}"]
     if variables:
-        args.append("-f")
-        args.append(f"variables={json.dumps(variables)}")
-    return _json(args) or {}
+        for key, value in variables.items():
+            if isinstance(value, bool):
+                args.extend(["-F", f"{key}={json.dumps(value)}"])
+            else:
+                args.extend(["-F", f"{key}={value}"])
+    raw = _json(args)
+    if raw is None:
+        return None
+    return raw.get("data")
 
 
 _REVIEW_THREADS_QUERY = """
@@ -244,7 +253,6 @@ query($owner: String!, $name: String!, $number: Int!) {
           path
           line
           originalLine
-          diffHunk
           comments(first: 10) {
             nodes {
               body
@@ -267,7 +275,7 @@ def pr_review_threads(repo: str, pr_num: int) -> tuple[list[dict], int]:
 
     Returns (threads, total_count).  *threads* is a list of thread dicts
     with keys: id, isResolved, isOutdated, path, line, originalLine,
-    diffHunk, comments (list of comment dicts).  Each comment has: body,
+    comments (list of comment dicts).  Each comment has: body,
     author, authorAssociation, createdAt, updatedAt.
     """
     owner, _, name = repo.partition("/")
@@ -306,7 +314,6 @@ def pr_review_threads(repo: str, pr_num: int) -> tuple[list[dict], int]:
             "path": thread.get("path", ""),
             "line": thread.get("line"),
             "originalLine": thread.get("originalLine"),
-            "diffHunk": thread.get("diffHunk", ""),
             "comments": comments,
         })
     return result, total_count
