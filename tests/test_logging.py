@@ -28,6 +28,15 @@ class TestLogCmdOutput:
     def setup_method(self):
         set_verbose(True)
 
+    def teardown_method(self):
+        set_verbose(False)
+
+    def test_verbose_false_suppresses_output(self, capsys):
+        set_verbose(False)
+        log_cmd_output(["git", "status"], "hello\n", "error\n")
+        captured = capsys.readouterr().out
+        assert captured == ""
+
     def test_emits_one_line_per_nonempty_line(self, capsys):
         log_cmd_output(["git", "worktree"], "line1\n\nline2\n", "")
         captured = capsys.readouterr().out
@@ -102,6 +111,9 @@ class TestCaptureParameterRemoved:
 class TestRunRoutesOutputThroughLogger:
     def setup_method(self):
         set_verbose(True)
+
+    def teardown_method(self):
+        set_verbose(False)
 
     def test_git_utils_run_logs_stdout(self, capsys):
         mock_result = mock.Mock()
