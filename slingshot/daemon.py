@@ -771,6 +771,9 @@ class Daemon:
 
         start = time.time()
         results: list[tuple[int, str, dict]] = []
+        all_outputs: list[tuple[int, int, str]] = []
+        failed_ec: int | None = None
+        no_verdict: bool = False
 
         with ThreadPoolExecutor(max_workers=len(review_commands)) as executor:
             future_to_idx = {}
@@ -781,11 +784,22 @@ class Daemon:
             for future in as_completed(future_to_idx):
                 i = future_to_idx[future]
                 exit_code, output = future.result()
+                all_outputs.append((i, exit_code, output))
 
                 if failed.is_set():
                     continue
 
-                if exit_code != 0 or ws.aborted:
+                if ws.aborted:
+                    failed.set()
+                    with procs_lock:
+                        for p in list(all_procs):
+                            if p.poll() is None:
+                                p.kill()
+                                p.wait()
+                    continue
+
+                if exit_code != 0:
+                    failed_ec = exit_code
                     failed.set()
                     with procs_lock:
                         for p in list(all_procs):
@@ -796,6 +810,7 @@ class Daemon:
 
                 verdict_data = prompts.parse_verdict(output)
                 if verdict_data is None:
+                    no_verdict = True
                     failed.set()
                     with procs_lock:
                         for p in list(all_procs):
@@ -814,9 +829,10 @@ class Daemon:
 
         main_escaped = git.has_changes(ws.repo.path) and not main_before
         if main_escaped:
-            for i, output, _ in sorted(results, key=lambda x: x[0]):
-                _write_agent_log(ws.repo.path, issue_num,
-                                 f"review-{i + 1}", output)
+            for i, _ec, output in sorted(all_outputs, key=lambda x: x[0]):
+                if output:
+                    _write_agent_log(ws.repo.path, issue_num,
+                                     f"review-{i + 1}", output)
             log.log_agent_failure(
                 ws.repo.name, issue_num, "review", "agent-escaped-worktree",
             )
@@ -825,30 +841,25 @@ class Daemon:
             )
             return elapsed
 
-        for i, output, _ in sorted(results, key=lambda x: x[0]):
-            _write_agent_log(ws.repo.path, issue_num,
-                             f"review-{i + 1}", output)
-            out_file = prompt_dir / f"{issue_num}-review-{i + 1}.md"
-            out_file.write_text(output)
-
-        # Archive prompt file and individual outputs to main repo
+        # Save and archive all model outputs (including failures)
         archive_dir = ws.repo.path / ".slingshot" / "prompts"
         archive_dir.mkdir(parents=True, exist_ok=True)
         _copy_file(prompt_file, archive_dir / prompt_file.name)
-        for i, _output, _ in sorted(results, key=lambda x: x[0]):
+
+        for i, _ec, output in sorted(all_outputs, key=lambda x: x[0]):
+            if output:
+                _write_agent_log(ws.repo.path, issue_num,
+                                 f"review-{i + 1}", output)
             out_file = prompt_dir / f"{issue_num}-review-{i + 1}.md"
+            out_file.write_text(output)
             _copy_file(out_file, archive_dir / out_file.name)
 
         if failed.is_set():
-            exit_code = -1
-            for f in future_to_idx:
-                if f.done():
-                    ec, _ = f.result()
-                    if ec != 0:
-                        exit_code = ec
-                        break
-            reason = f"exit={exit_code}" if exit_code != 0 else "no-verdict"
-            for _i, output, _ in sorted(results, key=lambda x: x[0]):
+            if failed_ec is not None:
+                reason = f"exit={failed_ec}"
+            else:
+                reason = "no-verdict"
+            for _i, _ec, output in sorted(all_outputs, key=lambda x: x[0]):
                 if output:
                     tail = _tail(output, 50)
                     log.log(

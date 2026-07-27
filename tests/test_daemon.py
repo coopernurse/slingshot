@@ -3,9 +3,10 @@ from __future__ import annotations
 import json
 import sys
 import time
+from concurrent.futures import Future
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from slingshot.config import Config, RepoConfig
 from slingshot.daemon import (
@@ -623,3 +624,372 @@ class TestRunAgent:
         assert code == -1
         assert output == "agent timed out"
         assert time.time() - start < 15
+
+
+# ---------------------------------------------------------------------------
+# Multi-model review tests
+# ---------------------------------------------------------------------------
+
+
+def _make_future(exit_code: int, output: str) -> Future:
+    f: Future = Future()
+    f.set_result((exit_code, output))
+    return f
+
+
+_PASS_OUTPUT = '```json\n{"verdict": "pass", "sections": {}}\n```'
+
+
+class TestDoReviewMultiSuccess:
+    def test_all_models_succeed_synthesis_runs_and_transitions(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        # Create futures that all succeed
+        f1 = _make_future(0, _PASS_OUTPUT)
+        f2 = _make_future(0, _PASS_OUTPUT)
+        f3 = _make_future(0, _PASS_OUTPUT)
+        futures = [f1, f2, f3]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        syn_output = '```json\n{"verdict": "pass", "voters": {"pass": 3, "fail": 0}, "sections": {}, "summary": "all good"}\n```'
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("slingshot.daemon.ThreadPoolExecutor", mock_exec_class), \
+             patch("slingshot.daemon.as_completed", mock_as_completed), \
+             patch("slingshot.daemon._run_agent",
+                   return_value=(0, syn_output)), \
+             patch("slingshot.daemon._write_agent_log") as mock_log, \
+             patch("slingshot.daemon._copy_file") as mock_copy, \
+             patch("slingshot.daemon.gh.pr_comment_create") as mock_comment:
+            daemon._do_review_multi(
+                ws, ["cmd1", "cmd2", "cmd3"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        # All 3 model outputs + synthesis prompt + synthesis log should be written
+        assert mock_log.call_count == 4  # 3 models + 1 synthesis
+        # Prompt file + 3 model outputs + synthesis prompt should be archived
+        assert mock_copy.call_count >= 4  # prompt + 3 model outputs + synthesis
+
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        assert "PASSED (3/3)" in body
+
+        mock_tx.assert_called_once_with(
+            repo, 8, "slingshot:reviewing", "slingshot:approved",
+        )
+
+    def test_synthesis_fail_to_implement_label(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        f1 = _make_future(0, _PASS_OUTPUT)
+        f2 = _make_future(0, _PASS_OUTPUT)
+        futures = [f1, f2]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        syn_output = '```json\n{"verdict": "fail", "voters": {"pass": 1, "fail": 1}, "sections": {"spec_fidelity": {"status": "fail", "notes": "broken"}}, "summary": "needs work"}\n```'
+
+        with patch.object(daemon, "_transition_label") as mock_tx, \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("slingshot.daemon.ThreadPoolExecutor", mock_exec_class), \
+             patch("slingshot.daemon.as_completed", mock_as_completed), \
+             patch("slingshot.daemon._run_agent",
+                   return_value=(0, syn_output)), \
+             patch("slingshot.daemon._write_agent_log"), \
+             patch("slingshot.daemon._copy_file"), \
+             patch("slingshot.daemon.gh.pr_comment_create") as mock_comment, \
+             patch("slingshot.daemon.gh.pr_comments", return_value=[{"body": ""}]):
+            daemon._do_review_multi(
+                ws, ["cmd1", "cmd2"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        mock_comment.assert_called_once()
+        body = mock_comment.call_args[0][2]
+        assert "FAILED (1/2)" in body
+        mock_tx.assert_called_once_with(
+            repo, 8, "slingshot:reviewing", "slingshot:implement",
+        )
+
+
+class TestDoReviewMultiFailure:
+    def test_nonzero_exit_kills_siblings_and_reports_exit_code(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        # Model 1 fails with exit code 2
+        f1 = _make_future(2, "error output")
+        f2 = _make_future(-1, "killed")
+        futures = [f1, f2]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        with patch.object(daemon, "_handle_agent_failure") as mock_fail, \
+             patch.object(daemon, "_transition_label"), \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("slingshot.daemon.ThreadPoolExecutor", mock_exec_class), \
+             patch("slingshot.daemon.as_completed", mock_as_completed), \
+             patch("slingshot.daemon._write_agent_log") as mock_log, \
+             patch("slingshot.daemon._copy_file") as mock_copy:
+            daemon._do_review_multi(
+                ws, ["cmd1", "cmd2"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        # Both model outputs should be saved and archived
+        assert mock_log.call_count == 2
+        assert mock_copy.call_count >= 3  # prompt + 2 model outputs
+        mock_fail.assert_called_once()
+        reason = mock_fail.call_args[0][2]
+        assert reason == "exit=2"
+
+    def test_no_verdict_reports_no_verdict_reason(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        # Model 1 exits 0 but returns no valid JSON
+        f1 = _make_future(0, "garbage output with no json block")
+        f2 = _make_future(-1, "killed")
+        futures = [f1, f2]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        with patch.object(daemon, "_handle_agent_failure") as mock_fail, \
+             patch.object(daemon, "_transition_label"), \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("slingshot.daemon.ThreadPoolExecutor", mock_exec_class), \
+             patch("slingshot.daemon.as_completed", mock_as_completed), \
+             patch("slingshot.daemon._write_agent_log"), \
+             patch("slingshot.daemon._copy_file"):
+            daemon._do_review_multi(
+                ws, ["cmd1", "cmd2"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        # Should report "no-verdict" not "exit=-1"
+        mock_fail.assert_called_once()
+        reason = mock_fail.call_args[0][2]
+        assert reason == "no-verdict"
+
+    def test_aborted_worker_returns_early(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+        ws.aborted = True
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        kill_output = "killed"
+
+        f1 = _make_future(-1, kill_output)
+        f2 = _make_future(-1, kill_output)
+        futures = [f1, f2]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        with patch.object(daemon, "_handle_agent_failure") as mock_fail, \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("concurrent.futures.ThreadPoolExecutor", mock_exec_class), \
+             patch("concurrent.futures.as_completed", mock_as_completed):
+            daemon._do_review_multi(
+                ws, ["cmd1", "cmd2"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        mock_fail.assert_not_called()
+
+    def test_synthesis_exit_nonzero_reports_synthesis_exit(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        f1 = _make_future(0, _PASS_OUTPUT)
+        futures = [f1]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        with patch.object(daemon, "_handle_agent_failure") as mock_fail, \
+             patch.object(daemon, "_transition_label"), \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("slingshot.daemon.ThreadPoolExecutor", mock_exec_class), \
+             patch("slingshot.daemon.as_completed", mock_as_completed), \
+             patch("slingshot.daemon._run_agent",
+                   return_value=(1, "synthesis failed")), \
+             patch("slingshot.daemon._write_agent_log"), \
+             patch("slingshot.daemon._copy_file"):
+            daemon._do_review_multi(
+                ws, ["cmd1"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        mock_fail.assert_called_once()
+        reason = mock_fail.call_args[0][2]
+        assert reason == "synthesis-exit=1"
+
+    def test_synthesis_no_verdict_reports_no_synthesis_verdict(self, tmp_path):
+        repo = RepoConfig(name="test/repo", path=tmp_path)
+        daemon = Daemon(Config(repos=[repo]))
+        issue = {"number": 8, "title": "t", "body": "spec"}
+        ws = WorkerState(repo, issue, "slingshot:review")
+
+        worktree = tmp_path / "wt"
+        worktree.mkdir()
+        prompt_dir = worktree / ".slingshot" / "prompts"
+        prompt_dir.mkdir(parents=True)
+        prompt_file = prompt_dir / "8-review.md"
+        prompt_file.write_text("prompt")
+
+        f1 = _make_future(0, _PASS_OUTPUT)
+        futures = [f1]
+
+        mock_exec_class = MagicMock()
+        mock_exec_instance = MagicMock()
+        mock_exec_class.return_value.__enter__.return_value = mock_exec_instance
+        mock_exec_instance.submit.side_effect = list(futures)
+
+        mock_as_completed = MagicMock()
+        mock_as_completed.return_value = futures
+
+        with patch.object(daemon, "_handle_agent_failure") as mock_fail, \
+             patch.object(daemon, "_transition_label"), \
+             patch("slingshot.daemon.gh.pr_list_by_head",
+                   return_value=[{"number": 10}]), \
+             patch("slingshot.daemon.git.fetch_origin"), \
+             patch("slingshot.daemon.git.worktree_path",
+                   return_value=worktree), \
+             patch("slingshot.daemon.git.has_changes", return_value=False), \
+             patch("slingshot.daemon.ThreadPoolExecutor", mock_exec_class), \
+             patch("slingshot.daemon.as_completed", mock_as_completed), \
+             patch("slingshot.daemon._run_agent",
+                   return_value=(0, "no json here")), \
+             patch("slingshot.daemon._write_agent_log"), \
+             patch("slingshot.daemon._copy_file"):
+            daemon._do_review_multi(
+                ws, ["cmd1"], 10, worktree,
+                prompt_file, "main", False, "spec",
+            )
+
+        mock_fail.assert_called_once()
+        reason = mock_fail.call_args[0][2]
+        assert reason == "no-synthesis-verdict"

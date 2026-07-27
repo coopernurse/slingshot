@@ -202,3 +202,108 @@ class TestReviewPromptAnchoring:
     def test_no_worktree_section_when_path_none(self):
         result = prompts.render_review_prompt("spec", "main")
         assert "Working directory" not in result
+
+
+class TestSynthesisPrompt:
+    def test_renders_with_multiple_outputs(self):
+        result = prompts.render_synthesis_prompt(
+            "spec", "main",
+            ["agent 1 output", "agent 2 output", "agent 3 output"],
+        )
+        assert "synthesis" in result.lower() or "tie-breaking" in result.lower()
+        assert "spec" in result
+        assert "agent 1 output" in result
+        assert "agent 2 output" in result
+        assert "agent 3 output" in result
+
+    def test_includes_diff_instruction(self):
+        result = prompts.render_synthesis_prompt(
+            "spec", "main", ["output"],
+        )
+        assert "git diff" in result
+        assert "origin/main...HEAD" in result
+
+    def test_worktree_path_in_output(self):
+        result = prompts.render_synthesis_prompt(
+            "spec", "main", ["output"], worktree_path="/tmp/wt",
+        )
+        assert "/tmp/wt" in result
+        assert "Do NOT" in result
+
+    def test_no_worktree_section_when_path_none(self):
+        result = prompts.render_synthesis_prompt("spec", "main", ["output"])
+        assert "Working directory" not in result
+
+
+class TestFormatPassSummaryWithVoters:
+    def test_single_model_no_voters(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "spec_fidelity": {"status": "pass", "notes": "ok"},
+            },
+            "summary": "all good",
+        }
+        result = prompts.format_pass_summary(data)
+        assert "PASSED" in result
+        assert "(" not in result  # no voter count
+
+    def test_with_voters(self):
+        data = {
+            "verdict": "pass",
+            "sections": {},
+            "summary": "consensus",
+        }
+        result = prompts.format_pass_summary(data, voters={"pass": 2, "fail": 1})
+        assert "PASSED (2/3)" in result
+
+    def test_with_dissent(self):
+        data = {
+            "verdict": "pass",
+            "sections": {},
+        }
+        result = prompts.format_pass_summary(data, dissent="Model 2 disagreed")
+        assert "### Dissent" in result
+        assert "Model 2 disagreed" in result
+
+    def test_includes_test_quality(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "test_quality": {"status": "pass", "notes": "good tests"},
+            },
+        }
+        result = prompts.format_pass_summary(data)
+        assert "Test Quality" in result
+        assert "good tests" in result
+
+
+class TestFormatFailSummaryWithVoters:
+    def test_with_voters(self):
+        data = {
+            "verdict": "fail",
+            "sections": {},
+        }
+        result = prompts.format_fail_summary(data, voters={"pass": 1, "fail": 2})
+        assert "FAILED (1/3)" in result
+        assert "slingshot:review-fail" in result
+
+    def test_with_dissent(self):
+        data = {
+            "verdict": "fail",
+            "sections": {},
+        }
+        result = prompts.format_fail_summary(data, dissent="Minority disagrees")
+        assert "### Dissent" in result
+        assert "Minority disagrees" in result
+
+    def test_includes_test_quality(self):
+        data = {
+            "verdict": "fail",
+            "sections": {
+                "test_quality": {"status": "fail", "notes": "no tests"},
+            },
+        }
+        result = prompts.format_fail_summary(data)
+        assert "Test Quality" in result
+        assert "no tests" in result
