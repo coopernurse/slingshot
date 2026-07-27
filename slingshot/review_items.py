@@ -152,7 +152,7 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
         comment_id = rest_match.get("id", "") if rest_match else ""
 
         alias = _next_alias()
-        url = f"https://github.com/{repo}/pull/{pr_num}#discussion_r{thread_node_id}"
+        url = f"https://github.com/{repo}/pull/{pr_num}#discussion_r{comment_id}"
 
         addr_epoch, disp_epoch, addr_body, _ = _reply_markers(
             comments[1:], thread_node_id,
@@ -196,16 +196,19 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
     conv_items: list[ReviewItem] = []
     pr_conversation_comments = gh.pr_comments(repo, pr_num)
 
+    # First pass: create items for comments starting with /slingshot
+    conv_ids_seen: set[str] = set()
     for c in pr_conversation_comments:
         body = c.get("body", "")
         if not body.strip().startswith("/slingshot"):
             continue
-
+        cid = str(c.get("id", c.get("databaseId", "")))
+        conv_ids_seen.add(cid)
         alias = _next_alias()
         conv = ReviewItem(
             alias=alias,
             kind="conversation",
-            conversation_comment_id=str(c.get("id", c.get("databaseId", ""))),
+            conversation_comment_id=cid,
             body=body,
             author=c.get("author", ""),
             author_association=c.get("authorAssociation", ""),
@@ -220,6 +223,73 @@ def fetch_items(repo: str, pr_num: int) -> tuple[list[ReviewItem], list[ReviewIt
     for conv_item in conv_items:
         cid = conv_item.conversation_comment_id
         if not cid:
+            continue
+        marker_str = f"conv:{cid}"
+        for c in pr_conversation_comments:
+            body = c.get("body", "")
+            epoch = _parse_iso_epoch(c.get("createdAt", ""))
+            if ADDRESSED_MARKER in body and marker_str in body:
+                if epoch > conv_item.addressed_epoch:
+                    conv_item.addressed_epoch = epoch
+                    conv_item.addressed_reply_body = body
+            if DISPUTED_MARKER in body and marker_str in body:
+                if epoch > conv_item.disputed_epoch:
+                    conv_item.disputed_epoch = epoch
+
+    # Second pass: find retracted conversation comments referenced by
+    # markers but not yet in the items list.  Retracted means the body
+    # no longer starts with /slingshot but a daemon marker exists.
+    retracted_ids: set[str] = set()
+    for c in pr_conversation_comments:
+        body = c.get("body", "")
+        for marker_prefix in (ADDRESSED_MARKER, DISPUTED_MARKER):
+            idx = 0
+            while True:
+                idx = body.find(marker_prefix, idx)
+                if idx == -1:
+                    break
+                rest = body[idx + len(marker_prefix):]
+                space_idx = rest.find(" ")
+                end_idx = space_idx if space_idx != -1 else None
+                ref = rest[:end_idx].strip()
+                if ref.startswith("conv:"):
+                    ref_id = ref[5:]
+                    if ref_id and ref_id not in conv_ids_seen:
+                        conv_ids_seen.add(ref_id)
+                        retracted_ids.add(ref_id)
+                        orig = None
+                        for orig_c in pr_conversation_comments:
+                            orig_cid = str(
+                                orig_c.get("id", orig_c.get("databaseId", "")),
+                            )
+                            if orig_cid == ref_id:
+                                orig = orig_c
+                                break
+                        if orig is not None:
+                            alias = _next_alias()
+                            retracted = ReviewItem(
+                                alias=alias,
+                                kind="conversation",
+                                conversation_comment_id=ref_id,
+                                body=orig.get("body", ""),
+                                author=orig.get("author", ""),
+                                author_association=orig.get(
+                                    "authorAssociation", "",
+                                ),
+                                created_at=orig.get("createdAt", ""),
+                                updated_at=orig.get("updatedAt", ""),
+                                url=orig.get("html_url", orig.get("url", "")),
+                            )
+                            all_items.append(retracted)
+                            conv_items.append(retracted)
+                idx += len(marker_prefix)
+                if space_idx != -1:
+                    idx = idx - len(marker_prefix) + space_idx
+
+    # Re-scan markers for newly added retracted items
+    for conv_item in conv_items:
+        cid = conv_item.conversation_comment_id
+        if not cid or cid not in retracted_ids:
             continue
         marker_str = f"conv:{cid}"
         for c in pr_conversation_comments:
@@ -291,7 +361,8 @@ def partition(items: list[ReviewItem]) -> tuple[
         if item.kind == "conversation" and not item.body.strip().startswith(
             "/slingshot"
         ):
-            resolved.append(item)
+            if item.addressed_epoch > 0 or item.disputed_epoch > 0:
+                resolved.append(item)
             continue
 
         newest_marker_epoch = max(item.addressed_epoch, item.disputed_epoch)

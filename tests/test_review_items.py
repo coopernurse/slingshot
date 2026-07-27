@@ -135,6 +135,7 @@ class TestPartition:
             alias="S1", kind="conversation",
             body="thanks, I removed the prefix",
             updated_at="2025-01-01T00:00:00Z",
+            addressed_epoch=1735689600,  # was previously addressed
         )
         unaddr, addr, res = partition([item])
         assert unaddr == []

@@ -630,7 +630,7 @@ class Daemon:
                     all_items, self._daemon_login(),
                 )
                 unaddressed, addressed_unresolved, _ = review_items.partition(qualified)
-                implement_items = unaddressed + addressed_unresolved
+                implement_items = unaddressed
             except Exception:
                 pass
             try:
@@ -847,36 +847,6 @@ class Daemon:
                 f"repo={ws.repo.name} issue={issue_num} "
                 f"event=review-gate-bounce reason=unaddressed-items"
             )
-            self._transition_label(
-                ws.repo, issue_num, ws.flight_label, "slingshot:implement",
-            )
-            return 0.0
-
-        try:
-            checks_status = gh.pr_check_status(ws.repo.name, pr_num)
-        except Exception:
-            checks_status = {"sha": "", "checks": []}
-        checks = checks_status.get("checks", [])
-        checks_pending = any(not c["completed"] for c in checks)
-        checks_failing = any(c["failed"] for c in checks)
-
-        try:
-            mergeable = gh.pr_mergeable(ws.repo.name, pr_num)
-        except Exception:
-            mergeable = None
-
-        if checks_pending or mergeable == "UNKNOWN" or mergeable is None:
-            if checks:
-                self._transition_label(
-                    ws.repo, issue_num, ws.flight_label, state.AWAITING_CHECKS,
-                )
-            else:
-                self._transition_label(
-                    ws.repo, issue_num, ws.flight_label, state.AWAITING_CHECKS,
-                )
-            return 0.0
-
-        if checks_failing or mergeable == "CONFLICTING":
             self._transition_label(
                 ws.repo, issue_num, ws.flight_label, "slingshot:implement",
             )
