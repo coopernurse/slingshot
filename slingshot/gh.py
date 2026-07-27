@@ -122,6 +122,14 @@ def issue_comments(repo: str, issue_num: int) -> list[dict]:
     for c in comments:
         if "createdAt" not in c and "created_at" in c:
             c["createdAt"] = c["created_at"]
+        if "updatedAt" not in c and "updated_at" in c:
+            c["updatedAt"] = c["updated_at"]
+        if "authorAssociation" not in c and "author_association" in c:
+            c["authorAssociation"] = c["author_association"]
+        if "author" not in c:
+            user = c.get("user", {})
+            if isinstance(user, dict) and user.get("login"):
+                c["author"] = user["login"]
     return comments
 
 
@@ -200,6 +208,175 @@ def label_create(repo: str, name: str, color: str = "0366d6") -> None:
         ], capture=False)
     except subprocess.CalledProcessError:
         pass  # already exists or permission denied
+
+
+# ---------------------------------------------------------------------------
+# Review threads (GraphQL) and mergeable check
+# ---------------------------------------------------------------------------
+
+
+def graphql(query: str, variables: dict | None = None) -> dict | None:
+    """Run a GraphQL query via ``gh api graphql``."""
+    args = ["gh", "api", "graphql", "-f", f"query={query}"]
+    if variables:
+        args.append("-f")
+        args.append(f"variables={json.dumps(variables)}")
+    return _json(args) or {}
+
+
+_REVIEW_THREADS_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) {
+      reviewThreads(first: 100) {
+        totalCount
+        nodes {
+          id
+          isResolved
+          isOutdated
+          path
+          line
+          originalLine
+          diffHunk
+          comments(first: 10) {
+            nodes {
+              body
+              author { login }
+              authorAssociation
+              createdAt
+              updatedAt
+            }
+          }
+        }
+      }
+    }
+  }
+}
+"""
+
+
+def pr_review_threads(repo: str, pr_num: int) -> tuple[list[dict], int]:
+    """Return review threads for a PR via GraphQL.
+
+    Returns (threads, total_count).  *threads* is a list of thread dicts
+    with keys: id, isResolved, isOutdated, path, line, originalLine,
+    diffHunk, comments (list of comment dicts).  Each comment has: body,
+    author, authorAssociation, createdAt, updatedAt.
+    """
+    owner, _, name = repo.partition("/")
+    data = graphql(_REVIEW_THREADS_QUERY, {
+        "owner": owner,
+        "name": name,
+        "number": pr_num,
+    })
+    if not data:
+        return [], 0
+    repo_node = data.get("repository", {}) or {}
+    pr_node = repo_node.get("pullRequest", {}) or {}
+    threads = pr_node.get("reviewThreads", {}) or {}
+    total_count = threads.get("totalCount", 0)
+    nodes = threads.get("nodes", []) or []
+    result: list[dict] = []
+    for thread in nodes:
+        if not thread:
+            continue
+        comments = []
+        for c in (thread.get("comments") or {}).get("nodes", []) or []:
+            if not c:
+                continue
+            author_node = c.get("author") or {}
+            comments.append({
+                "body": c.get("body", ""),
+                "author": author_node.get("login", ""),
+                "authorAssociation": c.get("authorAssociation", ""),
+                "createdAt": c.get("createdAt", ""),
+                "updatedAt": c.get("updatedAt", ""),
+            })
+        result.append({
+            "id": thread.get("id", ""),
+            "isResolved": thread.get("isResolved", False),
+            "isOutdated": thread.get("isOutdated", False),
+            "path": thread.get("path", ""),
+            "line": thread.get("line"),
+            "originalLine": thread.get("originalLine"),
+            "diffHunk": thread.get("diffHunk", ""),
+            "comments": comments,
+        })
+    return result, total_count
+
+
+def pr_review_reply(repo: str, pr_num: int, comment_id: str, body: str) -> dict | None:
+    """Reply to a review-thread comment via REST.
+
+    *comment_id* is the REST API comment id (a numeric string from the
+    ``id`` field on a review comment — not the GraphQL node id).
+    """
+    return _json([
+        "gh", "api", "-X", "POST",
+        f"repos/{repo}/pulls/{pr_num}/comments/{comment_id}/replies",
+        "-f", f"body={body}",
+    ])
+
+
+def pr_review_comments(repo: str, pr_num: int) -> list[dict]:
+    """Return all review comments on a PR via REST.
+
+    Returns a list of comment dicts with fields: id, body, path, line,
+    original_line, diff_hunk, user (login), author_association,
+    created_at, updated_at, in_reply_to_id, html_url.
+    """
+    try:
+        pages = _json([
+            "gh", "api", "--paginate", "--slurp",
+            f"repos/{repo}/pulls/{pr_num}/comments",
+        ]) or []
+        raw_comments = [c for page in pages for c in page]
+    except subprocess.CalledProcessError:
+        return []
+    result: list[dict] = []
+    for c in raw_comments:
+        user = c.get("user", {}) or {}
+        result.append({
+            "id": str(c.get("id", "")),
+            "body": c.get("body", ""),
+            "path": c.get("path", ""),
+            "line": c.get("line"),
+            "original_line": c.get("original_line"),
+            "diff_hunk": c.get("diff_hunk", ""),
+            "author": user.get("login", ""),
+            "author_association": c.get("author_association", ""),
+            "created_at": c.get("created_at", ""),
+            "updated_at": c.get("updated_at", ""),
+            "in_reply_to_id": c.get("in_reply_to_id"),
+            "html_url": c.get("html_url", ""),
+        })
+    return result
+
+
+_MERGEABLE_QUERY = """
+query($owner: String!, $name: String!, $number: Int!) {
+  repository(owner: $owner, name: $name) {
+    pullRequest(number: $number) { mergeable }
+  }
+}
+"""
+
+
+def pr_mergeable(repo: str, pr_num: int) -> str | None:
+    """Return the mergeability of a PR: MERGEABLE, CONFLICTING,
+    UNKNOWN, or None on error.
+    """
+    owner, _, name = repo.partition("/")
+    data = graphql(_MERGEABLE_QUERY, {
+        "owner": owner,
+        "name": name,
+        "number": pr_num,
+    })
+    try:
+        return (data or {}).get("repository", {}).get(
+            "pullRequest", {}).get("mergeable")
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------
