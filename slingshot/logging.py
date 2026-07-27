@@ -2,14 +2,36 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import json
+from datetime import datetime
 
 
 def log(msg: str) -> None:
     """Write a timestamped log line to stdout."""
-    ts = datetime.now(UTC).isoformat(timespec="seconds")
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     line = f"{ts} {msg}"
     print(line, flush=True)
+
+
+def log_cmd_output(cmd: list[str], stdout: str, stderr: str) -> None:
+    """Emit captured child-process output as structured log lines."""
+    cmd_label = " ".join(cmd[:2])
+    for stream_name, text in [("stdout", stdout), ("stderr", stderr)]:
+        if not text:
+            continue
+        for line in text.splitlines():
+            if line:
+                log(
+                    f'event=cmd-output cmd="{cmd_label}" '
+                    f"stream={stream_name} line={json.dumps(line)}"
+                )
+
+
+def log_lines(prefix_fields: str, text: str) -> None:
+    """Emit one log line per non-empty line of *text*."""
+    for line in text.splitlines():
+        if line:
+            log(f"{prefix_fields} line={json.dumps(line)}")
 
 
 def log_poll(repo: str, candidates: int, active: int) -> None:
