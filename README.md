@@ -84,14 +84,15 @@ poll_interval_seconds   = 60    # how often to poll GitHub
 claim_timeout_minutes   = 30    # stale-claim reaper threshold
 agent_timeout_minutes   = 30    # per-run agent kill switch
 review_fail_threshold   = 5     # fail-marker count on PR → blocked
-agent_failure_threshold = 3     # consecutive failures on issue → blocked
-max_concurrent          = 2     # simultaneous agent runs across all repos
-comment_debounce_seconds = 180  # seconds before a qualifying comment
-                                # triggers a bounce (prevents rapid-fire)
+agent_failure_threshold       = 3     # consecutive failures on issue → blocked
+unknown_mergeable_threshold    = 5     # max cycles with unknown PR merge status
+max_concurrent                = 2     # simultaneous agent runs across all repos
+comment_debounce_seconds       = 180   # seconds before a qualifying comment
+                                       # triggers a bounce (prevents rapid-fire)
 
 [agent]
-implement_command = "opencode run {prompt_file}"
-review_command    = "opencode run {prompt_file}"
+implement_command = "opencode run --auto {prompt_file}"
+review_commands = ["opencode run --auto {prompt_file}"]
 
 [[repo]]
 name = "owner/name"
@@ -115,8 +116,8 @@ available models):
 
 ```toml
 [agent]
-implement_command = "opencode run --model anthropic/claude-sonnet-4-20250514 {prompt_file}"
-review_command    = "opencode run --model openai/gpt-5.1 {prompt_file}"
+implement_command = "opencode run --auto --model anthropic/claude-sonnet-4-20250514 {prompt_file}"
+review_commands = ["opencode run --auto --model openai/gpt-5.1 {prompt_file}"]
 ```
 
 #### Use a specific opencode agent
@@ -126,8 +127,8 @@ binding. List agents with `opencode agent list`:
 
 ```toml
 [agent]
-implement_command = "opencode run --agent implementer {prompt_file}"
-review_command    = "opencode run --agent reviewer {prompt_file}"
+implement_command = "opencode run --auto --agent implementer {prompt_file}"
+review_commands = ["opencode run --auto --agent reviewer {prompt_file}"]
 ```
 
 #### Use a different backend
@@ -137,8 +138,8 @@ shell command:
 
 ```toml
 [agent]
-implement_command = "claude --print {prompt_file}"
-review_command    = "claude --print {prompt_file}"
+implement_command = "claude --auto --print {prompt_file}"
+review_commands = ["claude --auto --print {prompt_file}"]
 ```
 
 #### Useful opencode `run` flags
