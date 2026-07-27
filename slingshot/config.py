@@ -29,6 +29,8 @@ class Config:
     review_fail_threshold: int = 5
     agent_failure_threshold: int = 3
     max_concurrent: int = 2
+    comment_debounce_seconds: int = 180
+    unknown_mergeable_threshold: int = 5
     agent: AgentConfig = field(default_factory=AgentConfig)
     repos: list[RepoConfig] = field(default_factory=list)
 
@@ -61,6 +63,10 @@ def load_config(path: str | None = None) -> Config:
         cfg.agent_failure_threshold = int(raw["agent_failure_threshold"])
     if "max_concurrent" in raw:
         cfg.max_concurrent = int(raw["max_concurrent"])
+    if "comment_debounce_seconds" in raw:
+        cfg.comment_debounce_seconds = int(raw["comment_debounce_seconds"])
+    if "unknown_mergeable_threshold" in raw:
+        cfg.unknown_mergeable_threshold = int(raw["unknown_mergeable_threshold"])
 
     if "agent" in raw and isinstance(raw["agent"], dict):
         agent_raw = raw["agent"]

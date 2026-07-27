@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from slingshot import prompts
+from slingshot.review_items import ReviewItem
 
 
 class TestParseVerdict:
@@ -202,3 +203,167 @@ class TestReviewPromptAnchoring:
     def test_no_worktree_section_when_path_none(self):
         result = prompts.render_review_prompt("spec", "main")
         assert "Working directory" not in result
+
+
+class TestImplementPromptWithItems:
+    def test_items_section_in_prompt(self):
+        items = [
+            ReviewItem(
+                alias="S1", kind="inline", author="test-user",
+                body="/slingshot fix this", path="src/foo.py", line=42,
+                url="https://github.com/o/r/pull/1#discussion_r1",
+            ),
+        ]
+        result = prompts.render_implement_prompt(
+            "spec", "rework", items=items,
+        )
+        assert "Human Review Items" in result
+        assert "S1" in result
+        assert "src/foo.py:42" in result
+        assert "fix this" in result
+        assert "items" in result.lower()
+
+    def test_no_items_section_when_empty(self):
+        result = prompts.render_implement_prompt("spec", "rework")
+        assert "Human Review Items" not in result
+
+    def test_conflict_wording(self):
+        result = prompts.render_implement_prompt(
+            "spec", "rework", is_conflicting=True,
+        )
+        assert "Merge Conflicts" in result
+        assert "merge" in result.lower()
+
+    def test_conflict_suppresses_feedback(self):
+        result = prompts.render_implement_prompt(
+            "spec", "rework", feedback="some feedback", is_conflicting=True,
+        )
+        assert "Merge Conflicts" in result
+        assert "some feedback" not in result
+
+    def test_disposition_contract_in_prompt(self):
+        items = [
+            ReviewItem(alias="S1", kind="inline", author="u",
+                       body="/slingshot x",
+                       url="https://github.com/o/r/pull/1"),
+        ]
+        result = prompts.render_implement_prompt(
+            "spec", "rework", items=items,
+        )
+        assert '"items"' in result
+        assert '"action"' in result
+        assert 'fixed|wontfix|unclear' in result
+
+
+class TestReviewPromptWithItems:
+    def test_addressed_unresolved_section(self):
+        items = [
+            ReviewItem(
+                alias="S1", kind="inline", author="user",
+                body="/slingshot fix", path="src/bar.py", line=10,
+                url="https://github.com/o/r/pull/1",
+            ),
+        ]
+        result = prompts.render_review_prompt(
+            "spec", "main", addressed_unresolved=items,
+        )
+        assert "Verification Needed" in result
+        assert "S1" in result
+        assert "human_items" in result
+
+    def test_resolved_section(self):
+        items = [
+            ReviewItem(
+                alias="S2", kind="inline", author="user",
+                body="/slingshot fixed this", path="src/baz.py", line=5,
+                url="https://github.com/o/r/pull/1",
+            ),
+        ]
+        result = prompts.render_review_prompt(
+            "spec", "main", resolved=items,
+        )
+        assert "Already Resolved" in result
+        assert "S2" in result
+
+    def test_human_items_in_verdict_format(self):
+        result = prompts.render_review_prompt("spec", "main")
+        assert '"human_items"' in result
+        assert '"unsolved"' in result
+
+    def test_addressed_reply_body_in_section(self):
+        items = [
+            ReviewItem(
+                alias="S1", kind="inline", author="user",
+                body="/slingshot fix", path="src/bar.py", line=10,
+                url="https://github.com/o/r/pull/1",
+                addressed_reply_body=(
+                    "**Fixed** in `abc1234`: changed the null check\n"
+                    "<!-- slingshot:addressed node1 -->"
+                ),
+            ),
+        ]
+        result = prompts.render_review_prompt(
+            "spec", "main", addressed_unresolved=items,
+        )
+        assert "Implementer's reply" in result
+        assert "changed the null check" in result
+        # Hidden markers should be stripped from rendering
+        assert "slingshot:addressed" not in result.split("Implementer's reply")[1]
+
+
+class TestComputeEffectiveVerdictWithHumanItems:
+    def test_human_items_fail_defeats_pass(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "spec_fidelity": {"status": "pass"},
+                "security": {"status": "pass"},
+            },
+            "human_items": {
+                "status": "fail",
+                "unsolved": [{"id": "S1", "note": "not fixed"}],
+            },
+        }
+        assert prompts.compute_effective_verdict(data) == "fail"
+
+    def test_human_items_pass_with_all_pass(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "spec_fidelity": {"status": "pass"},
+                "security": {"status": "pass"},
+            },
+            "human_items": {"status": "pass", "unsolved": []},
+        }
+        assert prompts.compute_effective_verdict(data) == "pass"
+
+    def test_human_items_missing_does_not_block(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "spec_fidelity": {"status": "pass"},
+            },
+        }
+        assert prompts.compute_effective_verdict(data) == "pass"
+
+
+class TestFormatFailSummaryWithHumanItems:
+    def test_unsolved_items_in_summary(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "spec_fidelity": {"status": "pass"},
+            },
+            "human_items": {
+                "status": "fail",
+                "unsolved": [
+                    {"id": "S1", "note": "still broken"},
+                    {"id": "S3", "note": "regression"},
+                ],
+            },
+        }
+        result = prompts.format_fail_summary(data)
+        assert "S1" in result
+        assert "S3" in result
+        assert "still broken" in result
+        assert "Human Review Items" in result
