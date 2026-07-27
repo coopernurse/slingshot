@@ -135,3 +135,24 @@ path = "/tmp/test"
         cfg = Config()
         assert isinstance(cfg.agent.review_commands, list)
         assert cfg.agent.review_commands == ["opencode run --auto {prompt_file}"]
+
+    def test_comment_debounce_seconds_default(self, tmp_path: Path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""
+[[repo]]
+name = "owner/repo"
+path = "/tmp/test"
+""")
+        cfg = load_config(str(config_file))
+        assert cfg.comment_debounce_seconds == 180
+
+    def test_comment_debounce_seconds_custom(self, tmp_path: Path):
+        config_file = tmp_path / "config.toml"
+        config_file.write_text("""\
+comment_debounce_seconds = 300
+[[repo]]
+name = "owner/repo"
+path = "/tmp/test"
+""")
+        cfg = load_config(str(config_file))
+        assert cfg.comment_debounce_seconds == 300
