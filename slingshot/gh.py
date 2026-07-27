@@ -10,16 +10,17 @@ import json
 import subprocess
 from typing import Any
 
+from slingshot.logging import log_cmd_output
+
 
 def _run(
     args: list[str],
     *,
     input_text: str | None = None,
-    capture: bool = True,
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(
         args,
-        capture_output=capture,
+        capture_output=True,
         text=True,
         input=input_text,
         timeout=60,
@@ -30,11 +31,12 @@ def _run(
         raise subprocess.CalledProcessError(
             result.returncode, args, output=stdout, stderr=stderr
         )
+    log_cmd_output(args, result.stdout, result.stderr)
     return result
 
 
 def _json(args: list[str], *, input_text: str | None = None) -> Any:
-    result = _run(args, input_text=input_text, capture=True)
+    result = _run(args, input_text=input_text)
     return json.loads(result.stdout) if result.stdout.strip() else None
 
 
@@ -92,7 +94,7 @@ def issue_create(repo: str, title: str, body: str, labels: list[str]) -> dict:
     args = ["gh", "issue", "create", "--repo", repo, "--title", title, "--body", body]
     for lb in labels:
         args.extend(["--label", lb])
-    result = _run(args, capture=True)
+    result = _run(args)
     # gh issue create prints the URL. Parse it and fetch the issue JSON.
     url = result.stdout.strip()
     # Extract issue number from URL: .../issues/42
@@ -101,7 +103,7 @@ def issue_create(repo: str, title: str, body: str, labels: list[str]) -> dict:
 
 
 def issue_reopen(repo: str, issue_num: int) -> None:
-    _run(["gh", "issue", "reopen", "--repo", repo, str(issue_num)], capture=False)
+    _run(["gh", "issue", "reopen", "--repo", repo, str(issue_num)])
 
 
 def issue_edit_labels(
@@ -117,7 +119,7 @@ def issue_edit_labels(
         args.extend(["--add-label", lb])
     for lb in remove_labels or []:
         args.extend(["--remove-label", lb])
-    _run(args, capture=False)
+    _run(args)
 
 
 def issue_comment_create(repo: str, issue_num: int, body: str) -> dict:
@@ -225,24 +227,11 @@ def pr_create(
     base: str,
 ) -> dict:
     """Create a PR. Returns dict with number, url."""
-    result = _run(
-        [
-            "gh",
-            "pr",
-            "create",
-            "--repo",
-            repo,
-            "--title",
-            title,
-            "--body",
-            body,
-            "--head",
-            head,
-            "--base",
-            base,
-        ],
-        capture=True,
-    )
+    result = _run([
+        "gh", "pr", "create", "--repo", repo,
+        "--title", title, "--body", body,
+        "--head", head, "--base", base,
+    ])
     url = result.stdout.strip()
     num = int(url.rstrip("/").rsplit("/", 1)[-1])
     return {"number": num, "url": url}
@@ -276,19 +265,9 @@ def label_list(repo: str) -> list[str]:
 
 def label_create(repo: str, name: str, color: str = "0366d6") -> None:
     try:
-        _run(
-            [
-                "gh",
-                "label",
-                "create",
-                "--repo",
-                repo,
-                name,
-                "--color",
-                color,
-            ],
-            capture=False,
-        )
+        _run([
+            "gh", "label", "create", "--repo", repo, name, "--color", color,
+        ])
     except subprocess.CalledProcessError:
         pass  # already exists or permission denied
 

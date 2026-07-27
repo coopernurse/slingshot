@@ -195,16 +195,29 @@ def render_implement_prompt(
         )
 
     if is_conflicting:
-        parts.extend(
-            [
-                "## Merge Conflicts",
-                "",
-                "This branch has merge conflicts with the default branch. "
-                "Before addressing any other items, merge the latest default "
-                "branch into your branch and resolve all conflicts.",
-                "",
-            ]
-        )
+        parts.extend([
+            "## Merge Conflicts",
+            "",
+            "This branch has merge conflicts with the default branch. "
+            "Your FIRST and ONLY task is to resolve them:",
+            "",
+            "1. **Merge** the latest default branch into the current branch: "
+            "`git fetch origin && git merge origin/main` (replace `main` with "
+            "the default branch name if different).",
+            "2. **Resolve** all conflicts. Edit the conflicting files so they "
+            "compile, pass tests, and correctly combine both sides of the merge.",
+            "3. **Verify** the diff is non-empty: `git diff --stat origin/main` "
+            "must show changes.",
+            "4. **Run tests** to confirm the resolution didn't break anything.",
+            "",
+            "Do NOT commit, push, or open pull requests. The automation will "
+            "stage, commit, and push once you exit. Leave your changes staged "
+            "or in the working tree — do NOT run `git commit`.",
+            "",
+            "Do NOT address any other items from the spec. Focus exclusively on "
+            "resolving the merge conflict. The review phase will follow.",
+            "",
+        ])
 
     if feedback and not is_conflicting:
         parts.extend(["## Reviewer Feedback", "", feedback, ""])
