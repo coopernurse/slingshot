@@ -180,7 +180,9 @@ class TestImplementPromptAnchoring:
 
     def test_worktree_path_in_output(self):
         result = prompts.render_implement_prompt(
-            "spec", "fresh", worktree_path="/tmp/wt",
+            "spec",
+            "fresh",
+            worktree_path="/tmp/wt",
         )
         assert "/tmp/wt" in result
         assert "Do NOT create" in result
@@ -205,17 +207,134 @@ class TestReviewPromptAnchoring:
         assert "Working directory" not in result
 
 
+class TestSynthesisPrompt:
+    def test_renders_with_multiple_outputs(self):
+        result = prompts.render_synthesis_prompt(
+            "spec",
+            "main",
+            ["agent 1 output", "agent 2 output", "agent 3 output"],
+        )
+        assert "synthesis" in result.lower() or "tie-breaking" in result.lower()
+        assert "spec" in result
+        assert "agent 1 output" in result
+        assert "agent 2 output" in result
+        assert "agent 3 output" in result
+
+    def test_includes_diff_instruction(self):
+        result = prompts.render_synthesis_prompt(
+            "spec",
+            "main",
+            ["output"],
+        )
+        assert "git diff" in result
+        assert "origin/main...HEAD" in result
+
+    def test_worktree_path_in_output(self):
+        result = prompts.render_synthesis_prompt(
+            "spec",
+            "main",
+            ["output"],
+            worktree_path="/tmp/wt",
+        )
+        assert "/tmp/wt" in result
+        assert "Do NOT" in result
+
+    def test_no_worktree_section_when_path_none(self):
+        result = prompts.render_synthesis_prompt("spec", "main", ["output"])
+        assert "Working directory" not in result
+
+
+class TestFormatPassSummaryWithVoters:
+    def test_single_model_no_voters(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "spec_fidelity": {"status": "pass", "notes": "ok"},
+            },
+            "summary": "all good",
+        }
+        result = prompts.format_pass_summary(data)
+        assert "PASSED" in result
+        assert "(" not in result  # no voter count
+
+    def test_with_voters(self):
+        data = {
+            "verdict": "pass",
+            "sections": {},
+            "summary": "consensus",
+        }
+        result = prompts.format_pass_summary(data, voters={"pass": 2, "fail": 1})
+        assert "PASSED (2/3)" in result
+
+    def test_with_dissent(self):
+        data = {
+            "verdict": "pass",
+            "sections": {},
+        }
+        result = prompts.format_pass_summary(data, dissent="Model 2 disagreed")
+        assert "### Dissent" in result
+        assert "Model 2 disagreed" in result
+
+    def test_includes_test_quality(self):
+        data = {
+            "verdict": "pass",
+            "sections": {
+                "test_quality": {"status": "pass", "notes": "good tests"},
+            },
+        }
+        result = prompts.format_pass_summary(data)
+        assert "Test Quality" in result
+        assert "good tests" in result
+
+
+class TestFormatFailSummaryWithVoters:
+    def test_with_voters(self):
+        data = {
+            "verdict": "fail",
+            "sections": {},
+        }
+        result = prompts.format_fail_summary(data, voters={"pass": 1, "fail": 2})
+        assert "FAILED (1/3)" in result
+        assert "slingshot:review-fail" in result
+
+    def test_with_dissent(self):
+        data = {
+            "verdict": "fail",
+            "sections": {},
+        }
+        result = prompts.format_fail_summary(data, dissent="Minority disagrees")
+        assert "### Dissent" in result
+        assert "Minority disagrees" in result
+
+    def test_includes_test_quality(self):
+        data = {
+            "verdict": "fail",
+            "sections": {
+                "test_quality": {"status": "fail", "notes": "no tests"},
+            },
+        }
+        result = prompts.format_fail_summary(data)
+        assert "Test Quality" in result
+        assert "no tests" in result
+
+
 class TestImplementPromptWithItems:
     def test_items_section_in_prompt(self):
         items = [
             ReviewItem(
-                alias="S1", kind="inline", author="test-user",
-                body="/slingshot fix this", path="src/foo.py", line=42,
+                alias="S1",
+                kind="inline",
+                author="test-user",
+                body="/slingshot fix this",
+                path="src/foo.py",
+                line=42,
                 url="https://github.com/o/r/pull/1#discussion_r1",
             ),
         ]
         result = prompts.render_implement_prompt(
-            "spec", "rework", items=items,
+            "spec",
+            "rework",
+            items=items,
         )
         assert "Human Review Items" in result
         assert "S1" in result
@@ -229,43 +348,60 @@ class TestImplementPromptWithItems:
 
     def test_conflict_wording(self):
         result = prompts.render_implement_prompt(
-            "spec", "rework", is_conflicting=True,
+            "spec",
+            "rework",
+            is_conflicting=True,
         )
         assert "Merge Conflicts" in result
         assert "merge" in result.lower()
 
     def test_conflict_suppresses_feedback(self):
         result = prompts.render_implement_prompt(
-            "spec", "rework", feedback="some feedback", is_conflicting=True,
+            "spec",
+            "rework",
+            feedback="some feedback",
+            is_conflicting=True,
         )
         assert "Merge Conflicts" in result
         assert "some feedback" not in result
 
     def test_disposition_contract_in_prompt(self):
         items = [
-            ReviewItem(alias="S1", kind="inline", author="u",
-                       body="/slingshot x",
-                       url="https://github.com/o/r/pull/1"),
+            ReviewItem(
+                alias="S1",
+                kind="inline",
+                author="u",
+                body="/slingshot x",
+                url="https://github.com/o/r/pull/1",
+            ),
         ]
         result = prompts.render_implement_prompt(
-            "spec", "rework", items=items,
+            "spec",
+            "rework",
+            items=items,
         )
         assert '"items"' in result
         assert '"action"' in result
-        assert 'fixed|wontfix|unclear' in result
+        assert "fixed|wontfix|unclear" in result
 
 
 class TestReviewPromptWithItems:
     def test_addressed_unresolved_section(self):
         items = [
             ReviewItem(
-                alias="S1", kind="inline", author="user",
-                body="/slingshot fix", path="src/bar.py", line=10,
+                alias="S1",
+                kind="inline",
+                author="user",
+                body="/slingshot fix",
+                path="src/bar.py",
+                line=10,
                 url="https://github.com/o/r/pull/1",
             ),
         ]
         result = prompts.render_review_prompt(
-            "spec", "main", addressed_unresolved=items,
+            "spec",
+            "main",
+            addressed_unresolved=items,
         )
         assert "Verification Needed" in result
         assert "S1" in result
@@ -274,13 +410,19 @@ class TestReviewPromptWithItems:
     def test_resolved_section(self):
         items = [
             ReviewItem(
-                alias="S2", kind="inline", author="user",
-                body="/slingshot fixed this", path="src/baz.py", line=5,
+                alias="S2",
+                kind="inline",
+                author="user",
+                body="/slingshot fixed this",
+                path="src/baz.py",
+                line=5,
                 url="https://github.com/o/r/pull/1",
             ),
         ]
         result = prompts.render_review_prompt(
-            "spec", "main", resolved=items,
+            "spec",
+            "main",
+            resolved=items,
         )
         assert "Already Resolved" in result
         assert "S2" in result
@@ -293,8 +435,12 @@ class TestReviewPromptWithItems:
     def test_addressed_reply_body_in_section(self):
         items = [
             ReviewItem(
-                alias="S1", kind="inline", author="user",
-                body="/slingshot fix", path="src/bar.py", line=10,
+                alias="S1",
+                kind="inline",
+                author="user",
+                body="/slingshot fix",
+                path="src/bar.py",
+                line=10,
                 url="https://github.com/o/r/pull/1",
                 addressed_reply_body=(
                     "**Fixed** in `abc1234`: changed the null check\n"
@@ -303,7 +449,9 @@ class TestReviewPromptWithItems:
             ),
         ]
         result = prompts.render_review_prompt(
-            "spec", "main", addressed_unresolved=items,
+            "spec",
+            "main",
+            addressed_unresolved=items,
         )
         assert "Implementer's reply" in result
         assert "changed the null check" in result

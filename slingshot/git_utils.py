@@ -9,7 +9,8 @@ from slingshot.logging import log_cmd_output
 
 
 def _run(
-    args: list[str], *,
+    args: list[str],
+    *,
     cwd: str | Path | None = None,
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(
@@ -50,8 +51,9 @@ def remote_branch_exists(checkout: Path, branch: str) -> bool:
 def branch_last_commit_epoch(checkout: Path, branch: str) -> int | None:
     """Return committer-date (epoch seconds) of origin/<branch> tip, or None."""
     try:
-        result = _run(["git", "log", "-1", "--format=%ct", f"origin/{branch}"],
-                      cwd=checkout)
+        result = _run(
+            ["git", "log", "-1", "--format=%ct", f"origin/{branch}"], cwd=checkout
+        )
         return int(result.stdout.strip())
     except (subprocess.CalledProcessError, ValueError):
         return None
@@ -195,7 +197,8 @@ def commit_changes(worktree: Path, message: str) -> None:
 def push_branch(worktree: Path) -> None:
     """Push the current branch to origin and set upstream."""
     branch_name = _run(
-        ["git", "rev-parse", "--abbrev-ref", "HEAD"], cwd=worktree,
+        ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=worktree,
     ).stdout.strip()
     _run(["git", "push", "-u", "origin", branch_name], cwd=worktree)
 

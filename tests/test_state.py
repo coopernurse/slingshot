@@ -5,9 +5,14 @@ from slingshot import state
 
 class TestStripSlingshotLabels:
     def test_removes_all_slingshot_labels(self):
-        result = state.strip_slingshot_labels({
-            "slingshot:implement", "bug", "slingshot:review", "enhancement",
-        })
+        result = state.strip_slingshot_labels(
+            {
+                "slingshot:implement",
+                "bug",
+                "slingshot:review",
+                "enhancement",
+            }
+        )
         assert result == {"bug", "enhancement"}
 
     def test_leaves_non_slingshot_labels_untouched(self):

@@ -14,7 +14,8 @@ from slingshot.logging import log_cmd_output
 
 
 def _run(
-    args: list[str], *,
+    args: list[str],
+    *,
     input_text: str | None = None,
 ) -> subprocess.CompletedProcess:
     result = subprocess.run(
@@ -49,20 +50,41 @@ def issue_list(repo: str, label: str) -> list[dict]:
 
     Returns a list of dicts: number, title, labels (list of str), body, state.
     """
-    return _json([
-        "gh", "issue", "list", "--repo", repo,
-        "--label", label, "--state", "open",
-        "--json", "number,title,labels,body,state",
-    ]) or []
+    return (
+        _json(
+            [
+                "gh",
+                "issue",
+                "list",
+                "--repo",
+                repo,
+                "--label",
+                label,
+                "--state",
+                "open",
+                "--json",
+                "number,title,labels,body,state",
+            ]
+        )
+        or []
+    )
 
 
 def issue_get(repo: str, issue_num: int) -> dict | None:
     """Return a single issue dict or None (e.g. 404)."""
     try:
-        return _json([
-            "gh", "issue", "view", "--repo", repo, str(issue_num),
-            "--json", "number,title,labels,body,state",
-        ])
+        return _json(
+            [
+                "gh",
+                "issue",
+                "view",
+                "--repo",
+                repo,
+                str(issue_num),
+                "--json",
+                "number,title,labels,body,state",
+            ]
+        )
     except subprocess.CalledProcessError:
         return None
 
@@ -93,29 +115,46 @@ def issue_edit_labels(
     """Add and/or remove labels on an issue. All slingshot labels are
     replaced atomically by the caller — this is a low-level wrapper."""
     args = ["gh", "issue", "edit", "--repo", repo, str(issue_num)]
-    for lb in (add_labels or []):
+    for lb in add_labels or []:
         args.extend(["--add-label", lb])
-    for lb in (remove_labels or []):
+    for lb in remove_labels or []:
         args.extend(["--remove-label", lb])
     _run(args)
 
 
 def issue_comment_create(repo: str, issue_num: int, body: str) -> dict:
     """Post a comment on an issue. Returns the REST API comment dict (id, url, ...)."""
-    return _json([
-        "gh", "api", "-X", "POST",
-        f"repos/{repo}/issues/{issue_num}/comments",
-        "-f", f"body={body}",
-    ]) or {}
+    return (
+        _json(
+            [
+                "gh",
+                "api",
+                "-X",
+                "POST",
+                f"repos/{repo}/issues/{issue_num}/comments",
+                "-f",
+                f"body={body}",
+            ]
+        )
+        or {}
+    )
 
 
 def issue_comments(repo: str, issue_num: int) -> list[dict]:
     """Return all comments on an issue (or PR) from every page."""
     try:
-        pages = _json([
-            "gh", "api", "--paginate", "--slurp",
-            f"repos/{repo}/issues/{issue_num}/comments",
-        ]) or []
+        pages = (
+            _json(
+                [
+                    "gh",
+                    "api",
+                    "--paginate",
+                    "--slurp",
+                    f"repos/{repo}/issues/{issue_num}/comments",
+                ]
+            )
+            or []
+        )
         comments = [c for page in pages for c in page]
     except subprocess.CalledProcessError:
         return []
@@ -142,19 +181,40 @@ def issue_comments(repo: str, issue_num: int) -> list[dict]:
 
 def pr_list_by_head(repo: str, head_branch: str, state: str = "open") -> list[dict]:
     """Find PRs whose head branch matches."""
-    return _json([
-        "gh", "pr", "list", "--repo", repo,
-        "--head", head_branch, "--state", state,
-        "--json", "number,title,url,headRefName,baseRefName,state,mergedAt",
-    ]) or []
+    return (
+        _json(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repo,
+                "--head",
+                head_branch,
+                "--state",
+                state,
+                "--json",
+                "number,title,url,headRefName,baseRefName,state,mergedAt",
+            ]
+        )
+        or []
+    )
 
 
 def pr_get(repo: str, pr_num: int) -> dict | None:
     try:
-        return _json([
-            "gh", "pr", "view", "--repo", repo, str(pr_num),
-            "--json", "number,title,url,headRefName,baseRefName,state,mergedAt",
-        ])
+        return _json(
+            [
+                "gh",
+                "pr",
+                "view",
+                "--repo",
+                repo,
+                str(pr_num),
+                "--json",
+                "number,title,url,headRefName,baseRefName,state,mergedAt",
+            ]
+        )
     except subprocess.CalledProcessError:
         return None
 
@@ -281,11 +341,14 @@ def pr_review_threads(repo: str, pr_num: int) -> tuple[list[dict], int]:
     author, authorAssociation, createdAt, updatedAt.
     """
     owner, _, name = repo.partition("/")
-    data = graphql(_REVIEW_THREADS_QUERY, {
-        "owner": owner,
-        "name": name,
-        "number": pr_num,
-    })
+    data = graphql(
+        _REVIEW_THREADS_QUERY,
+        {
+            "owner": owner,
+            "name": name,
+            "number": pr_num,
+        },
+    )
     if not data:
         return [], 0
     repo_node = data.get("repository", {}) or {}
@@ -302,22 +365,26 @@ def pr_review_threads(repo: str, pr_num: int) -> tuple[list[dict], int]:
             if not c:
                 continue
             author_node = c.get("author") or {}
-            comments.append({
-                "body": c.get("body", ""),
-                "author": author_node.get("login", ""),
-                "authorAssociation": c.get("authorAssociation", ""),
-                "createdAt": c.get("createdAt", ""),
-                "updatedAt": c.get("updatedAt", ""),
-            })
-        result.append({
-            "id": thread.get("id", ""),
-            "isResolved": thread.get("isResolved", False),
-            "isOutdated": thread.get("isOutdated", False),
-            "path": thread.get("path", ""),
-            "line": thread.get("line"),
-            "originalLine": thread.get("originalLine"),
-            "comments": comments,
-        })
+            comments.append(
+                {
+                    "body": c.get("body", ""),
+                    "author": author_node.get("login", ""),
+                    "authorAssociation": c.get("authorAssociation", ""),
+                    "createdAt": c.get("createdAt", ""),
+                    "updatedAt": c.get("updatedAt", ""),
+                }
+            )
+        result.append(
+            {
+                "id": thread.get("id", ""),
+                "isResolved": thread.get("isResolved", False),
+                "isOutdated": thread.get("isOutdated", False),
+                "path": thread.get("path", ""),
+                "line": thread.get("line"),
+                "originalLine": thread.get("originalLine"),
+                "comments": comments,
+            }
+        )
     return result, total_count
 
 
@@ -327,11 +394,17 @@ def pr_review_reply(repo: str, pr_num: int, comment_id: str, body: str) -> dict 
     *comment_id* is the REST API comment id (a numeric string from the
     ``id`` field on a review comment — not the GraphQL node id).
     """
-    return _json([
-        "gh", "api", "-X", "POST",
-        f"repos/{repo}/pulls/{pr_num}/comments/{comment_id}/replies",
-        "-f", f"body={body}",
-    ])
+    return _json(
+        [
+            "gh",
+            "api",
+            "-X",
+            "POST",
+            f"repos/{repo}/pulls/{pr_num}/comments/{comment_id}/replies",
+            "-f",
+            f"body={body}",
+        ]
+    )
 
 
 def pr_review_comments(repo: str, pr_num: int) -> list[dict]:
@@ -342,30 +415,40 @@ def pr_review_comments(repo: str, pr_num: int) -> list[dict]:
     created_at, updated_at, in_reply_to_id, html_url.
     """
     try:
-        pages = _json([
-            "gh", "api", "--paginate", "--slurp",
-            f"repos/{repo}/pulls/{pr_num}/comments",
-        ]) or []
+        pages = (
+            _json(
+                [
+                    "gh",
+                    "api",
+                    "--paginate",
+                    "--slurp",
+                    f"repos/{repo}/pulls/{pr_num}/comments",
+                ]
+            )
+            or []
+        )
         raw_comments = [c for page in pages for c in page]
     except subprocess.CalledProcessError:
         return []
     result: list[dict] = []
     for c in raw_comments:
         user = c.get("user", {}) or {}
-        result.append({
-            "id": str(c.get("id", "")),
-            "body": c.get("body", ""),
-            "path": c.get("path", ""),
-            "line": c.get("line"),
-            "original_line": c.get("original_line"),
-            "diff_hunk": c.get("diff_hunk", ""),
-            "author": user.get("login", ""),
-            "author_association": c.get("author_association", ""),
-            "created_at": c.get("created_at", ""),
-            "updated_at": c.get("updated_at", ""),
-            "in_reply_to_id": c.get("in_reply_to_id"),
-            "html_url": c.get("html_url", ""),
-        })
+        result.append(
+            {
+                "id": str(c.get("id", "")),
+                "body": c.get("body", ""),
+                "path": c.get("path", ""),
+                "line": c.get("line"),
+                "original_line": c.get("original_line"),
+                "diff_hunk": c.get("diff_hunk", ""),
+                "author": user.get("login", ""),
+                "author_association": c.get("author_association", ""),
+                "created_at": c.get("created_at", ""),
+                "updated_at": c.get("updated_at", ""),
+                "in_reply_to_id": c.get("in_reply_to_id"),
+                "html_url": c.get("html_url", ""),
+            }
+        )
     return result
 
 
@@ -383,14 +466,18 @@ def pr_mergeable(repo: str, pr_num: int) -> str | None:
     UNKNOWN, or None on error.
     """
     owner, _, name = repo.partition("/")
-    data = graphql(_MERGEABLE_QUERY, {
-        "owner": owner,
-        "name": name,
-        "number": pr_num,
-    })
+    data = graphql(
+        _MERGEABLE_QUERY,
+        {
+            "owner": owner,
+            "name": name,
+            "number": pr_num,
+        },
+    )
     try:
-        return (data or {}).get("repository", {}).get(
-            "pullRequest", {}).get("mergeable")
+        return (
+            (data or {}).get("repository", {}).get("pullRequest", {}).get("mergeable")
+        )
     except Exception:
         return None
 
@@ -406,10 +493,21 @@ def pr_check_status(repo: str, pr_num: int) -> dict:
     Uses ``gh pr view`` with ``--json headRefOid,statusCheckRollup`` (not
     ``gh pr checks``, which exits non-zero on failure).
     """
-    raw = _json([
-        "gh", "pr", "view", "--repo", repo, str(pr_num),
-        "--json", "headRefOid,statusCheckRollup",
-    ]) or {}
+    raw = (
+        _json(
+            [
+                "gh",
+                "pr",
+                "view",
+                "--repo",
+                repo,
+                str(pr_num),
+                "--json",
+                "headRefOid,statusCheckRollup",
+            ]
+        )
+        or {}
+    )
     sha = raw.get("headRefOid") or ""
     checks: list[dict] = []
     rollup = raw.get("statusCheckRollup") or []
@@ -423,7 +521,9 @@ def pr_check_status(repo: str, pr_num: int) -> dict:
             url = item.get("detailsUrl", "")
             completed = status == "COMPLETED"
             failed = completed and conclusion in (
-                "FAILURE", "TIMED_OUT", "ACTION_REQUIRED"
+                "FAILURE",
+                "TIMED_OUT",
+                "ACTION_REQUIRED",
             )
         # --- StatusContext shape ---
         elif ctx == "StatusContext":
@@ -434,12 +534,14 @@ def pr_check_status(repo: str, pr_num: int) -> dict:
             failed = state in ("FAILURE", "ERROR")
         else:
             continue
-        checks.append({
-            "name": name,
-            "completed": completed,
-            "failed": failed,
-            "url": url,
-        })
+        checks.append(
+            {
+                "name": name,
+                "completed": completed,
+                "failed": failed,
+                "url": url,
+            }
+        )
     return {"sha": sha, "checks": checks}
 
 

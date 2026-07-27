@@ -47,6 +47,3 @@ def _extract_title(text: str) -> str | None:
         if stripped.startswith("# ") or stripped == "#":
             return stripped.lstrip("#").strip()
     return None
-
-
-
